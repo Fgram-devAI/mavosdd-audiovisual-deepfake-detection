@@ -56,11 +56,12 @@ PY
 ```
 
 The fetch is deterministic for a fixed MAVOS-DD repository state: candidates are
-sorted before caps are applied, and rejected files do not count toward caps. The
-validated `data/manifest.csv` is the record of the exact accepted subset. Raw
-videos, quarantine files, extracted features, checkpoints, and run artifacts stay
-gitignored; commit the manifest and frozen splits after validation so later work
-can audit the selected subset without committing the video data.
+sorted before caps are applied, and rejected files do not count toward caps.
+`data/manifest.csv` is generated locally as the record of the accepted subset,
+but it stays gitignored with raw videos, quarantine logs, extracted features,
+checkpoints, and run artifacts. Keeping the manifest out of Git lets fresh clones
+run the same fetch command instead of treating a committed manifest as already
+downloaded local data.
 
 After validation:
 

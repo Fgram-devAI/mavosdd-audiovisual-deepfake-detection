@@ -7,6 +7,9 @@ venv/
 
 data/raw/
 data/quarantine/
+data/manifest.csv
+data/quarantine_log.csv
+data/splits/*.csv
 data/features/audio/
 data/features/lips/
 models/checkpoints/
