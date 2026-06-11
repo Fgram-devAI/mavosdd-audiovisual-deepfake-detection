@@ -7,6 +7,9 @@ venv/
 
 data/raw/
 data/quarantine/
+data/manifest.csv
+data/quarantine_log.csv
+data/splits/*.csv
 data/features/audio/
 data/features/lips/
 models/checkpoints/
@@ -20,6 +23,7 @@ release/
 
 # Local assistant/operator context. Keep repo docs intentional and public-facing.
 /claude.md
+/CLAUDE.md
 /codex.md
 /workflow.md
 prompts/

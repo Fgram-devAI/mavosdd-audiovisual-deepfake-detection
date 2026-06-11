@@ -13,3 +13,4 @@ tqdm==4.66.4
 soundfile==0.12.1
 ffmpeg-python==0.2.0
 PyYAML==6.0.1
+pytest==9.0.3

@@ -13,6 +13,7 @@ FEAT_AUDIO_DIR = DATA_ROOT / "features" / "audio"
 FEAT_LIPS_DIR = DATA_ROOT / "features" / "lips"
 SPLITS_DIR = DATA_ROOT / "splits"
 MANIFEST = DATA_ROOT / "manifest.csv"
+QUARANTINE_LOG = DATA_ROOT / "quarantine_log.csv"
 
 CAPS = {"real": 500, "echomimic": 250, "memo": 250}
 LABEL_MAP = {"real": 0, "echomimic": 1, "memo": 1}
