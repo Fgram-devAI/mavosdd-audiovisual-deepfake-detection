@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import csv
+import logging
 from pathlib import Path
 
 import cv2
@@ -13,6 +14,26 @@ from src.common import CAPS, LABEL_MAP, MANIFEST, QUARANTINE_DIR, QUARANTINE_LOG
 DATASET_ID = "unibuc-cs/MAVOS-DD"
 
 QUARANTINE_REASONS = {"unreadable", "no_frames", "zero_fps", "no_audio_stream"}
+
+logger = logging.getLogger(__name__)
+
+
+def inspect_schema(record: dict) -> None:
+    """Warn if expected metadata fields are missing on the first record.
+
+    Hard-fails (KeyError) when `video` is absent, since no fallback exists
+    for the payload itself.
+    """
+    if "video" not in record:
+        raise KeyError("record missing required 'video' field")
+    if "language" not in record:
+        logger.warning(
+            "first record has no 'language' field; falling back to path-prefix filter"
+        )
+    if "generation_method" not in record and "method" not in record:
+        logger.warning(
+            "first record has no 'generation_method'/'method' field; falling back to path-prefix filter"
+        )
 
 
 def classify(record: dict) -> str | None:
