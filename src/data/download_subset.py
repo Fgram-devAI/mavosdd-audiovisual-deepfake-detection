@@ -37,10 +37,26 @@ def inspect_schema(record: dict) -> None:
 
 
 def classify(record: dict) -> str | None:
-    """Return the target source folder, or None when a record is out of scope."""
-    lang = str(record.get("language", "")).lower()
-    method = str(record.get("generation_method", record.get("method", ""))).lower()
+    """Return the target source folder, or None when a record is out of scope.
+
+    Metadata is authoritative when present: a non-english `language` field, or a
+    `generation_method`/`method` outside the cap set, both reject the record
+    without falling back to the path. The path-prefix fallback only fires when
+    the relevant metadata field is missing.
+    """
+    lang_raw = record.get("language")
+    method_raw = record.get("generation_method", record.get("method"))
     path = str(record.get("file_name", record.get("path", ""))).lower()
+
+    lang = str(lang_raw).lower() if lang_raw is not None else None
+    method = str(method_raw).lower() if method_raw is not None else None
+
+    # Language present but not english -> reject outright.
+    if lang is not None and lang != "english":
+        return None
+    # Generator present but out of scope -> reject outright.
+    if method is not None and method != "" and method not in CAPS:
+        return None
 
     if lang == "english" and method in CAPS:
         return method
@@ -136,37 +152,49 @@ def load_existing_state() -> tuple[dict[str, int], set[str], set[str]]:
     return counts, done_ids, quarantined_ids
 
 
+MANIFEST_HEADER = [
+    "video_id", "relative_path", "source_folder", "binary_label",
+    "duration_s", "fps", "n_frames",
+]
+
+
+def _open_manifest_writer(handle, write_header: bool) -> csv.writer:
+    writer = csv.writer(handle)
+    if write_header:
+        writer.writerow(MANIFEST_HEADER)
+    return writer
+
+
 def main() -> None:
-    counts, done_ids = load_existing_counts()
+    counts, done_ids, quarantined_ids = load_existing_state()
     MANIFEST.parent.mkdir(parents=True, exist_ok=True)
-    stream = load_dataset(DATASET_ID, split="train", streaming=True)
+    stream = iter(load_dataset(DATASET_ID, split="train", streaming=True))
 
-    new_file = not MANIFEST.exists()
+    new_manifest = not MANIFEST.exists()
+    inspected = False
     with MANIFEST.open("a", newline="") as mf:
-        writer = csv.writer(mf)
-        if new_file:
-            writer.writerow(
-                [
-                    "video_id",
-                    "relative_path",
-                    "source_folder",
-                    "binary_label",
-                    "duration_s",
-                    "fps",
-                    "n_frames",
-                ]
-            )
+        writer = _open_manifest_writer(mf, write_header=new_manifest)
 
-        for i, record in enumerate(stream):
+        i = -1
+        while True:
             if all(counts[k] >= CAPS[k] for k in CAPS):
                 break
+            try:
+                record = next(stream)
+            except StopIteration:
+                break
+            i += 1
+
+            if not inspected:
+                inspect_schema(record)
+                inspected = True
 
             cls = classify(record)
             if cls is None or counts[cls] >= CAPS[cls]:
                 continue
 
             video_id = record_id(record, i)
-            if video_id in done_ids:
+            if video_id in done_ids or video_id in quarantined_ids:
                 continue
 
             out_dir = RAW_DIR / cls
@@ -174,23 +202,25 @@ def main() -> None:
             out_path = out_dir / f"{video_id}.mp4"
             out_path.write_bytes(video_payload(record))
 
-            duration_s, fps, n_frames = probe_video(out_path)
-            writer.writerow(
-                [
-                    video_id,
-                    str(out_path),
-                    cls,
-                    LABEL_MAP[cls],
-                    f"{duration_s:.3f}",
-                    f"{fps:.3f}",
-                    n_frames,
-                ]
-            )
+            reason, duration_s, fps, n_frames = probe_video(out_path)
+            if reason is None and not has_audio_stream(out_path):
+                reason = "no_audio_stream"
+            if reason is not None:
+                quarantine_file(out_path, video_id, cls, reason)
+                quarantined_ids.add(video_id)
+                continue
+
+            writer.writerow([
+                video_id, str(out_path), cls, LABEL_MAP[cls],
+                f"{duration_s:.3f}", f"{fps:.3f}", n_frames,
+            ])
             counts[cls] += 1
             done_ids.add(video_id)
             print(f"\r{counts}", end="")
 
     total = sum(counts.values())
+    for k in CAPS:
+        assert counts[k] <= CAPS[k], f"Cap breached for {k}: {counts[k]} > {CAPS[k]}"
     assert total <= sum(CAPS.values()), f"Cap breached: {total}"
     print(f"\nIngestion complete: {counts} | total={total}")
 
