@@ -12,11 +12,35 @@ The pipeline is intentionally feature-first:
 
 ## Quick Start
 
+Create a Python 3.10 virtual environment.
+
+macOS / Linux:
+
 ```bash
 python3.10 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
+```
 
+Windows PowerShell:
+
+```powershell
+py -3.10 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+```
+
+Windows Command Prompt:
+
+```bat
+py -3.10 -m venv .venv
+.venv\Scripts\activate.bat
+python -m pip install -r requirements.txt
+```
+
+Smoke-test the model module:
+
+```bash
 python -m src.models.late_fusion
 ```
 
@@ -36,8 +60,18 @@ total      1000
 
 Run:
 
+macOS / Linux:
+
 ```bash
 source .venv/bin/activate
+python -m src.data.download_subset
+python -m src.data.download_subset --validate
+```
+
+Windows PowerShell:
+
+```powershell
+.\.venv\Scripts\Activate.ps1
 python -m src.data.download_subset
 python -m src.data.download_subset --validate
 ```
@@ -63,12 +97,38 @@ checkpoints, and run artifacts. Keeping the manifest out of Git lets fresh clone
 run the same fetch command instead of treating a committed manifest as already
 downloaded local data.
 
-After validation:
+## Split And Extract Features
+
+After `python -m src.data.download_subset --validate` prints `VALIDATION OK`,
+create the local train/validation/test split files:
 
 ```bash
 python -m src.data.make_splits
+```
+
+Then extract audio and lip-motion feature artifacts:
+
+```bash
 python -m src.features.extract_audio
 python -m src.features.extract_lips
 ```
+
+Check extraction counts:
+
+macOS / Linux:
+
+```bash
+find data/features/audio -name '*.npy' | wc -l
+find data/features/lips -name '*.npz' | wc -l
+```
+
+Windows PowerShell:
+
+```powershell
+(Get-ChildItem data/features/audio -Filter *.npy).Count
+(Get-ChildItem data/features/lips -Filter *.npz).Count
+```
+
+Expected count for both modalities is `1000`.
 
 See `docs/workflow.md` for the phase-based implementation guide.
