@@ -8,9 +8,11 @@ import cv2
 import ffmpeg
 from datasets import load_dataset
 
-from src.common import CAPS, LABEL_MAP, MANIFEST, RAW_DIR
+from src.common import CAPS, LABEL_MAP, MANIFEST, QUARANTINE_DIR, QUARANTINE_LOG, RAW_DIR
 
 DATASET_ID = "unibuc-cs/MAVOS-DD"
+
+QUARANTINE_REASONS = {"unreadable", "no_frames", "zero_fps", "no_audio_stream"}
 
 
 def classify(record: dict) -> str | None:
@@ -73,6 +75,24 @@ def has_audio_stream(path: Path) -> bool:
         return False
     streams = info.get("streams", []) if isinstance(info, dict) else []
     return any(s.get("codec_type") == "audio" for s in streams)
+
+
+def quarantine_file(src: Path, video_id: str, source_folder: str, reason: str) -> Path:
+    """Move `src` to data/quarantine/<source_folder>/<video_id>.mp4 and log the reason."""
+    assert reason in QUARANTINE_REASONS, f"Unknown reason: {reason}"
+    target_dir = QUARANTINE_DIR / source_folder
+    target_dir.mkdir(parents=True, exist_ok=True)
+    target = target_dir / f"{video_id}.mp4"
+    if src.exists():
+        src.replace(target)
+    QUARANTINE_LOG.parent.mkdir(parents=True, exist_ok=True)
+    new_file = not QUARANTINE_LOG.exists()
+    with QUARANTINE_LOG.open("a", newline="") as f:
+        writer = csv.writer(f)
+        if new_file:
+            writer.writerow(["video_id", "source_folder", "reason"])
+        writer.writerow([video_id, source_folder, reason])
+    return target
 
 
 def load_existing_counts() -> tuple[dict[str, int], set[str]]:
