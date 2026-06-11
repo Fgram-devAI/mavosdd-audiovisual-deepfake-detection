@@ -1,15 +1,16 @@
-"""Stream MAVOS-DD, keep english/{real,echomimic,memo}, stop at 1,000 videos."""
+"""Fetch MAVOS-DD english/{real,echomimic,memo}, stop at 1,000 videos."""
 from __future__ import annotations
 
 import argparse
 import csv
 import logging
+import shutil
 import sys
 from pathlib import Path
 
 import cv2
 import ffmpeg
-from datasets import load_dataset
+from huggingface_hub import HfApi, hf_hub_download
 
 from src.common import CAPS, LABEL_MAP, MANIFEST, QUARANTINE_DIR, QUARANTINE_LOG, RAW_DIR
 
@@ -23,11 +24,13 @@ logger = logging.getLogger(__name__)
 def inspect_schema(record: dict) -> None:
     """Warn if expected metadata fields are missing on the first record.
 
-    Hard-fails (KeyError) when `video` is absent, since no fallback exists
-    for the payload itself.
+    Hard-fails (KeyError) when no file source exists. Supported sources are a
+    streamed `video` payload, a downloaded `local_path`, or deferred Hub download
+    metadata (`repo_id` + `path`).
     """
-    if "video" not in record:
-        raise KeyError("record missing required 'video' field")
+    has_deferred_hub_source = "repo_id" in record and "path" in record
+    if "video" not in record and "local_path" not in record and not has_deferred_hub_source:
+        raise KeyError("record missing required video source")
     if "language" not in record:
         logger.warning(
             "first record has no 'language' field; falling back to path-prefix filter"
@@ -82,6 +85,51 @@ def video_payload(record: dict) -> bytes:
     if not isinstance(payload, bytes):
         raise TypeError(f"Unsupported video payload type: {type(payload)!r}")
     return payload
+
+
+def target_repo_files(dataset_id: str = DATASET_ID) -> list[str]:
+    """List only the MAVOS-DD files under english/{real,echomimic,memo}/."""
+    print(f"Listing files for {dataset_id} ...", flush=True)
+    files = HfApi().list_repo_files(dataset_id, repo_type="dataset")
+    targets = []
+    for path in files:
+        lower = path.lower()
+        if not lower.endswith(".mp4"):
+            continue
+        if any(lower.startswith(f"english/{cls}/") for cls in CAPS):
+            targets.append(path)
+    targets.sort()
+    print(f"Found {len(targets)} target mp4 files under english/*", flush=True)
+    return targets
+
+
+def iter_candidate_records(dataset_id: str = DATASET_ID):
+    """Yield target english mp4 metadata without downloading yet."""
+    for path in target_repo_files(dataset_id):
+        cls = path.split("/", 2)[1].lower()
+        yield {
+            "language": "english",
+            "generation_method": cls,
+            "file_name": path,
+            "path": path,
+            "repo_id": dataset_id,
+        }
+
+
+def materialize_video(record: dict, out_path: Path) -> None:
+    """Persist a candidate record to the raw-data path expected by the pipeline."""
+    if "local_path" in record:
+        shutil.copy2(record["local_path"], out_path)
+        return
+    if "repo_id" in record:
+        local_path = hf_hub_download(
+            repo_id=record["repo_id"],
+            repo_type="dataset",
+            filename=record["path"],
+        )
+        shutil.copy2(local_path, out_path)
+        return
+    out_path.write_bytes(video_payload(record))
 
 
 def probe_video(path: Path) -> tuple[str | None, float, float, int]:
@@ -170,7 +218,7 @@ def _open_manifest_writer(handle, write_header: bool) -> csv.writer:
 def main() -> None:
     counts, done_ids, quarantined_ids = load_existing_state()
     MANIFEST.parent.mkdir(parents=True, exist_ok=True)
-    stream = iter(load_dataset(DATASET_ID, split="train", streaming=True))
+    records = iter(iter_candidate_records(DATASET_ID))
 
     new_manifest = not MANIFEST.exists()
     inspected = False
@@ -182,7 +230,7 @@ def main() -> None:
             if all(counts[k] >= CAPS[k] for k in CAPS):
                 break
             try:
-                record = next(stream)
+                record = next(records)
             except StopIteration:
                 break
             i += 1
@@ -202,7 +250,7 @@ def main() -> None:
             out_dir = RAW_DIR / cls
             out_dir.mkdir(parents=True, exist_ok=True)
             out_path = out_dir / f"{video_id}.mp4"
-            out_path.write_bytes(video_payload(record))
+            materialize_video(record, out_path)
 
             reason, duration_s, fps, n_frames = probe_video(out_path)
             if reason is None and not has_audio_stream(out_path):
@@ -216,9 +264,10 @@ def main() -> None:
                 video_id, str(out_path), cls, LABEL_MAP[cls],
                 f"{duration_s:.3f}", f"{fps:.3f}", n_frames,
             ])
+            mf.flush()
             counts[cls] += 1
             done_ids.add(video_id)
-            print(f"\r{counts}", end="")
+            print(f"\r{counts}", end="", flush=True)
 
     total = sum(counts.values())
     for k in CAPS:

@@ -39,7 +39,32 @@ def test_method_alias_satisfies_generator_check(caplog):
                    for r in caplog.records)
 
 
-def test_missing_video_raises():
+def test_local_path_payload_satisfies_required_file_check(caplog):
+    record = {
+        "language": "english",
+        "generation_method": "real",
+        "file_name": "english/real/x.mp4",
+        "local_path": "/tmp/x.mp4",
+    }
+    with caplog.at_level(logging.WARNING):
+        inspect_schema(record)
+    assert caplog.records == []
+
+
+def test_deferred_hub_payload_satisfies_required_file_check(caplog):
+    record = {
+        "language": "english",
+        "generation_method": "real",
+        "file_name": "english/real/x.mp4",
+        "path": "english/real/x.mp4",
+        "repo_id": "unibuc-cs/MAVOS-DD",
+    }
+    with caplog.at_level(logging.WARNING):
+        inspect_schema(record)
+    assert caplog.records == []
+
+
+def test_missing_payload_raises():
     import pytest
     with pytest.raises(KeyError):
         inspect_schema({"language": "english", "generation_method": "real", "file_name": "x"})

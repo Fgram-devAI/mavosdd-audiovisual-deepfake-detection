@@ -15,11 +15,9 @@ def _record(video_id: str, cls: str, payload: bytes, lang: str = "english") -> d
 
 
 def _patch_stream(monkeypatch, records):
-    def fake_loader(_id, split, streaming):
-        assert split == "train"
-        assert streaming is True
+    def fake_records(_id):
         return iter(records)
-    monkeypatch.setattr(ds, "load_dataset", fake_loader)
+    monkeypatch.setattr(ds, "iter_candidate_records", fake_records)
 
 
 def _patch_caps(monkeypatch, caps):
@@ -116,16 +114,42 @@ def test_stream_breaks_at_saturation(monkeypatch, redirect_data_root,
     clean = make_mp4_with_audio("ok.mp4").read_bytes()
     consumed = []
 
-    def loader(_id, split, streaming):
+    def loader(_id):
         for r in [_record("a", "real", clean), _record("b", "real", clean),
                   _record("c", "real", clean)]:
             consumed.append(r["file_name"])
             yield r
-    monkeypatch.setattr(ds, "load_dataset", loader)
+    monkeypatch.setattr(ds, "iter_candidate_records", loader)
 
     ds.main()
     # second record should never be consumed because cap saturated after first.
     assert consumed == ["english/real/a.mp4"]
+
+
+def test_saturated_class_is_skipped_before_materialize(monkeypatch, redirect_data_root,
+                                                       make_mp4_with_audio):
+    _patch_caps(monkeypatch, {"real": 1, "echomimic": 1, "memo": 0})
+    clean = make_mp4_with_audio("ok.mp4").read_bytes()
+    _patch_stream(monkeypatch, [
+        _record("e1", "echomimic", clean),
+        _record("e2", "echomimic", clean),
+        _record("r1", "real", clean),
+    ])
+    materialized = []
+    original = ds.materialize_video
+
+    def spy_materialize(record, out_path):
+        materialized.append(record["file_name"])
+        return original(record, out_path)
+
+    monkeypatch.setattr(ds, "materialize_video", spy_materialize)
+
+    ds.main()
+
+    assert materialized == [
+        "english/echomimic/e1.mp4",
+        "english/real/r1.mp4",
+    ]
 
 
 def test_resume_skips_already_done_and_quarantined(monkeypatch, redirect_data_root,
@@ -171,6 +195,6 @@ def test_re_run_on_complete_set_is_noop(monkeypatch, redirect_data_root,
 
     before = redirect_data_root["manifest"].read_text()
     # Empty stream on re-run; nothing to add, but main() must not crash.
-    monkeypatch.setattr(ds, "load_dataset", lambda *a, **kw: iter([]))
+    monkeypatch.setattr(ds, "iter_candidate_records", lambda _id: iter([]))
     ds.main()
     assert redirect_data_root["manifest"].read_text() == before
