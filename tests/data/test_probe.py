@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from src.data.download_subset import probe_video
+from src.data.download_subset import has_audio_stream, probe_video
 
 
 def test_clean_video_returns_no_reason(make_mp4_with_audio):
@@ -32,3 +32,19 @@ def test_corrupt_file_is_unreadable(make_corrupt_mp4):
 def test_missing_file_is_unreadable(tmp_path: Path):
     reason, _, _, _ = probe_video(tmp_path / "nope.mp4")
     assert reason == "unreadable"
+
+
+def test_video_with_audio_has_audio_stream(make_mp4_with_audio):
+    assert has_audio_stream(make_mp4_with_audio()) is True
+
+
+def test_video_without_audio_has_no_audio_stream(make_mp4_without_audio):
+    assert has_audio_stream(make_mp4_without_audio()) is False
+
+
+def test_corrupt_file_has_no_audio_stream(make_corrupt_mp4):
+    assert has_audio_stream(make_corrupt_mp4()) is False
+
+
+def test_missing_file_has_no_audio_stream(tmp_path):
+    assert has_audio_stream(tmp_path / "nope.mp4") is False

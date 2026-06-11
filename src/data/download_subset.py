@@ -5,6 +5,7 @@ import csv
 from pathlib import Path
 
 import cv2
+import ffmpeg
 from datasets import load_dataset
 
 from src.common import CAPS, LABEL_MAP, MANIFEST, RAW_DIR
@@ -60,6 +61,18 @@ def probe_video(path: Path) -> tuple[str | None, float, float, int]:
         return "zero_fps", 0.0, fps, n_frames
     duration = float(n_frames / fps)
     return None, duration, fps, n_frames
+
+
+def has_audio_stream(path: Path) -> bool:
+    """True iff the file carries at least one audio stream (per ffprobe)."""
+    try:
+        info = ffmpeg.probe(str(path))
+    except ffmpeg.Error:
+        return False
+    except Exception:
+        return False
+    streams = info.get("streams", []) if isinstance(info, dict) else []
+    return any(s.get("codec_type") == "audio" for s in streams)
 
 
 def load_existing_counts() -> tuple[dict[str, int], set[str]]:
