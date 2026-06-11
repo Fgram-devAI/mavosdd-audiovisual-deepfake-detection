@@ -225,5 +225,61 @@ def main() -> None:
     print(f"\nIngestion complete: {counts} | total={total}")
 
 
+def validate_manifest() -> list[str]:
+    """Run all post-ingestion acceptance checks. Returns issue strings; empty == pass."""
+    issues: list[str] = []
+
+    if not MANIFEST.exists():
+        return [f"manifest missing: {MANIFEST}"]
+
+    with MANIFEST.open(newline="") as f:
+        rows = list(csv.DictReader(f))
+
+    expected_total = sum(CAPS.values())
+    if len(rows) != expected_total:
+        issues.append(f"row count {len(rows)} != {expected_total}")
+
+    per_class = {k: 0 for k in CAPS}
+    seen_ids: set[str] = set()
+    for row in rows:
+        cls = row["source_folder"]
+        if cls in per_class:
+            per_class[cls] += 1
+        vid = row["video_id"]
+        if vid in seen_ids:
+            issues.append(f"duplicate video_id: {vid}")
+        seen_ids.add(vid)
+        if not Path(row["relative_path"]).exists():
+            issues.append(f"missing file for {vid}: {row['relative_path']}")
+        if int(row["binary_label"]) != LABEL_MAP.get(cls, -1):
+            issues.append(f"label mismatch for {vid}: {row['binary_label']} vs {LABEL_MAP.get(cls)}")
+        try:
+            d = float(row["duration_s"]); fps = float(row["fps"]); n = int(row["n_frames"])
+        except ValueError:
+            issues.append(f"non-numeric probe field for {vid}")
+            continue
+        if not (d > 0 and fps > 0 and n > 0):
+            issues.append(f"non-positive probe field for {vid}: dur={d} fps={fps} n={n}")
+
+    for cls, cap in CAPS.items():
+        if per_class[cls] < cap:
+            issues.append(f"{cls} under cap: {per_class[cls]} < {cap}")
+        if per_class[cls] > cap:
+            issues.append(f"{cls} OVER cap: {per_class[cls]} > {cap}")
+
+    if QUARANTINE_LOG.exists():
+        with QUARANTINE_LOG.open(newline="") as f:
+            for row in csv.DictReader(f):
+                if row["reason"] not in QUARANTINE_REASONS:
+                    issues.append(
+                        f"invalid quarantine reason for {row['video_id']}: {row['reason']}"
+                    )
+                qpath = QUARANTINE_DIR / row["source_folder"] / f"{row['video_id']}.mp4"
+                if not qpath.exists():
+                    issues.append(f"quarantine row without file: {row['video_id']} → {qpath}")
+
+    return issues
+
+
 if __name__ == "__main__":
     main()
