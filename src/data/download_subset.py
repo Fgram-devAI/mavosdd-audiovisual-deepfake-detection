@@ -95,17 +95,24 @@ def quarantine_file(src: Path, video_id: str, source_folder: str, reason: str) -
     return target
 
 
-def load_existing_counts() -> tuple[dict[str, int], set[str]]:
+def load_existing_state() -> tuple[dict[str, int], set[str], set[str]]:
+    """Rebuild (counts, done_ids, quarantined_ids) from the on-disk CSVs."""
     counts = {k: 0 for k in CAPS}
     done_ids: set[str] = set()
-    if not MANIFEST.exists():
-        return counts, done_ids
+    quarantined_ids: set[str] = set()
 
-    with MANIFEST.open(newline="") as f:
-        for row in csv.DictReader(f):
-            done_ids.add(row["video_id"])
-            counts[row["source_folder"]] += 1
-    return counts, done_ids
+    if MANIFEST.exists():
+        with MANIFEST.open(newline="") as f:
+            for row in csv.DictReader(f):
+                done_ids.add(row["video_id"])
+                counts[row["source_folder"]] += 1
+
+    if QUARANTINE_LOG.exists():
+        with QUARANTINE_LOG.open(newline="") as f:
+            for row in csv.DictReader(f):
+                quarantined_ids.add(row["video_id"])
+
+    return counts, done_ids, quarantined_ids
 
 
 def main() -> None:
