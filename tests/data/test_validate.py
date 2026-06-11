@@ -1,6 +1,8 @@
 """Post-ingestion validation reports discrepancies; never mutates state."""
 import csv
+import sys
 
+import src.data.download_subset as ds
 from src.common import CAPS, LABEL_MAP
 from src.data.download_subset import validate_manifest
 
@@ -112,3 +114,23 @@ def test_invalid_quarantine_reason_reports(redirect_data_root):
         w.writerow(["x", "real", "weird_reason"])
     issues = validate_manifest()
     assert any("reason" in s.lower() for s in issues)
+
+
+def test_cli_validate_returns_zero_when_valid(redirect_data_root, monkeypatch, capsys):
+    _full_valid_manifest(redirect_data_root)
+    monkeypatch.setattr(sys, "argv", ["download_subset", "--validate"])
+    rc = ds.cli()
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "VALIDATION OK" in out
+
+
+def test_cli_validate_returns_one_when_issues(redirect_data_root, monkeypatch, capsys):
+    raw_dir = redirect_data_root["raw_dir"]
+    _write_manifest(redirect_data_root["manifest"],
+                    [_make_row("r0", "real", raw_dir)])
+    monkeypatch.setattr(sys, "argv", ["download_subset", "--validate"])
+    rc = ds.cli()
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "row count" in out

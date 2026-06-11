@@ -1,8 +1,10 @@
 """Stream MAVOS-DD, keep english/{real,echomimic,memo}, stop at 1,000 videos."""
 from __future__ import annotations
 
+import argparse
 import csv
 import logging
+import sys
 from pathlib import Path
 
 import cv2
@@ -281,5 +283,26 @@ def validate_manifest() -> list[str]:
     return issues
 
 
-if __name__ == "__main__":
+def cli(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="MAVOS-DD subset ingestion.")
+    parser.add_argument(
+        "--validate", action="store_true",
+        help="Run post-ingestion acceptance checks (read-only); no streaming, no writes.",
+    )
+    args = parser.parse_args(argv)
+
+    if args.validate:
+        issues = validate_manifest()
+        if not issues:
+            print("VALIDATION OK")
+            return 0
+        for s in issues:
+            print(s)
+        return 1
+
     main()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(cli())
