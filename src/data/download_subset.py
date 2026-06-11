@@ -42,13 +42,24 @@ def video_payload(record: dict) -> bytes:
     return payload
 
 
-def probe_video(path: Path) -> tuple[float, float, int]:
+def probe_video(path: Path) -> tuple[str | None, float, float, int]:
+    """Return (rejection_reason, duration_s, fps, n_frames).
+
+    rejection_reason is None when the file is readable with positive fps + frames.
+    """
     cap = cv2.VideoCapture(str(path))
+    if not cap.isOpened():
+        cap.release()
+        return "unreadable", 0.0, 0.0, 0
     fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0)
     n_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
-    duration = float(n_frames / fps) if fps > 0 else 0.0
     cap.release()
-    return duration, fps, n_frames
+    if n_frames <= 0:
+        return "no_frames", 0.0, fps, n_frames
+    if fps <= 0:
+        return "zero_fps", 0.0, fps, n_frames
+    duration = float(n_frames / fps)
+    return None, duration, fps, n_frames
 
 
 def load_existing_counts() -> tuple[dict[str, int], set[str]]:
