@@ -20,4 +20,4 @@ pip install -r requirements.txt
 python -m src.models.late_fusion
 ```
 
-See `docs/workflow.md` for the day-by-day execution order.
+See `docs/workflow.md` for the phase-based implementation guide.

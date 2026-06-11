@@ -20,6 +20,7 @@ release/
 
 # Local assistant/operator context. Keep repo docs intentional and public-facing.
 /claude.md
+/CLAUDE.md
 /codex.md
 /workflow.md
 prompts/
