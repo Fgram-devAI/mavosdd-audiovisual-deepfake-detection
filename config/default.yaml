@@ -1,0 +1,42 @@
+seed: 42
+
+paths:
+  data_root: data
+  raw_dir: data/raw
+  manifest: data/manifest.csv
+  splits_dir: data/splits
+  audio_features_dir: data/features/audio
+  lip_features_dir: data/features/lips
+  checkpoints_dir: models/checkpoints
+  reports_dir: reports
+
+dataset:
+  id: unibuc-cs/MAVOS-DD
+  split: train
+  language: english
+  caps:
+    real: 500
+    echomimic: 250
+    memo: 250
+  label_map:
+    real: 0
+    echomimic: 1
+    memo: 1
+
+features:
+  audio:
+    sample_rate: 16000
+    seconds: 4.0
+    wav2vec2_model: facebook/wav2vec2-base-960h
+  lips:
+    fps: 5
+    frames: 20
+
+training:
+  batch_size: 32
+  max_epochs: 50
+  lr: 0.0001
+  weight_decay: 0.01
+  early_stop_patience: 7
+  dropout: 0.3
+  max_trainable_params: 2000000
