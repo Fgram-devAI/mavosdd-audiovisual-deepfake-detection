@@ -8,6 +8,7 @@ import tempfile
 import librosa
 import numpy as np
 import torch
+from tqdm import tqdm
 from transformers import Wav2Vec2Model, Wav2Vec2Processor
 
 from src.common import FEAT_AUDIO_DIR, MANIFEST, N_SAMPLES, SR, W2V_MODEL, device, set_seed
@@ -55,7 +56,7 @@ def main() -> None:
     with MANIFEST.open(newline="") as f:
         rows = list(csv.DictReader(f))
 
-    for row in rows:
+    for row in tqdm(rows, desc="audio features", unit="video"):
         out = FEAT_AUDIO_DIR / f"{row['video_id']}.npy"
         if out.exists():
             continue
@@ -65,7 +66,7 @@ def main() -> None:
             hidden = model(inputs).last_hidden_state.squeeze(0)
             np.save(out, hidden.cpu().numpy().astype(np.float16))
         except Exception as exc:
-            print(f"[FAIL] {row['video_id']}: {exc}")
+            tqdm.write(f"[FAIL] {row['video_id']}: {exc}")
 
     print(f"Audio store: {len(list(FEAT_AUDIO_DIR.glob('*.npy')))} arrays")
 

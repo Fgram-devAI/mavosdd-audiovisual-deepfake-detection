@@ -6,6 +6,7 @@ import csv
 import cv2
 import mediapipe as mp
 import numpy as np
+from tqdm import tqdm
 
 from src.common import AUDIO_SECONDS, FEAT_LIPS_DIR, MANIFEST, N_FRAMES
 
@@ -107,14 +108,14 @@ def main() -> None:
         with MANIFEST.open(newline="") as f:
             rows = list(csv.DictReader(f))
 
-        for row in rows:
+        for row in tqdm(rows, desc="lip features", unit="video"):
             out = FEAT_LIPS_DIR / f"{row['video_id']}.npz"
             if out.exists():
                 continue
             feats, mask = extract_one(row["relative_path"], mesh)
             np.savez(out, feats=feats, mask=mask)
             if mask.sum() == 0:
-                print(f"[NO-FACE] {row['video_id']} ({row['source_folder']})")
+                tqdm.write(f"[NO-FACE] {row['video_id']} ({row['source_folder']})")
     finally:
         mesh.close()
 
