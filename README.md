@@ -131,4 +131,208 @@ Windows PowerShell:
 
 Expected count for both modalities is `1000`.
 
+## Transcribe WAV Audio With Google STT V2
+
+The optional transcription step turns local WAV files into JSON transcripts for
+later synthetic speech experiments with Google TTS, ElevenLabs, or another voice
+generation provider.
+
+First export WAV files from the raw videos:
+
+```bash
+python scripts/export_wav.py
+```
+
+Then configure Google Cloud authentication. For local development with the
+Google Cloud CLI:
+
+```bash
+gcloud auth application-default login
+echo 'GOOGLE_CLOUD_PROJECT="<your-gcp-project-id>"' >> .env
+```
+
+For a service-account key file:
+
+```bash
+cat >> .env <<'EOF'
+GOOGLE_APPLICATION_CREDENTIALS="/absolute/path/to/service-account.json"
+GOOGLE_CLOUD_PROJECT="<your-gcp-project-id>"
+EOF
+```
+
+Windows PowerShell equivalents:
+
+```powershell
+gcloud auth application-default login
+Add-Content .env 'GOOGLE_CLOUD_PROJECT="<your-gcp-project-id>"'
+```
+
+or:
+
+```powershell
+Add-Content .env 'GOOGLE_APPLICATION_CREDENTIALS="C:\absolute\path\to\service-account.json"'
+Add-Content .env 'GOOGLE_CLOUD_PROJECT="<your-gcp-project-id>"'
+```
+
+Make sure the Google Cloud project has billing enabled and the Speech-to-Text
+API enabled. The transcription script automatically loads `.env` by default.
+Then run a small smoke test:
+
+```bash
+python scripts/transcribe_google_stt_v2.py --limit 5
+```
+
+Run all WAV files:
+
+```bash
+python scripts/transcribe_google_stt_v2.py
+```
+
+Run only the synthetic classes planned for TTS augmentation:
+
+```bash
+python scripts/transcribe_google_stt_v2.py \
+  --source-folder echomimic \
+  --source-folder memo \
+  --model latest_long
+```
+
+Outputs are written locally under:
+
+```text
+data/transcripts/google_stt_v2/
+```
+
+`data/transcripts/` is gitignored because transcripts may contain dataset speech
+content and are generated artifacts.
+
+## Generate ElevenLabs TTS Alternatives
+
+Use the Google STT transcripts to generate synthetic speech alternatives with
+ElevenLabs. The script rotates deterministically through the project voice pool
+so repeated runs assign the same transcript to the same voice as long as the
+input transcripts and voice list stay unchanged.
+
+Add the ElevenLabs API key to `.env`:
+
+```bash
+cat >> .env <<'EOF'
+ELEVENLABS_API_KEY="<your-elevenlabs-api-key>"
+EOF
+```
+
+Windows PowerShell:
+
+```powershell
+Add-Content .env 'ELEVENLABS_API_KEY="<your-elevenlabs-api-key>"'
+```
+
+Estimate selected transcript characters before spending API credits:
+
+```bash
+python scripts/synthesize_tts_from_transcripts.py --estimate-only
+```
+
+If ElevenLabs rejects library voices on a free plan, inspect the voices available
+to your API key:
+
+```bash
+python scripts/synthesize_tts_from_transcripts.py --list-voices
+```
+
+Then run with voices from your account instead of the project voice pool, if
+needed:
+
+```bash
+python scripts/synthesize_tts_from_transcripts.py --use-account-voices --limit 2
+```
+
+Generate a capped batch that stays under a character budget:
+
+```bash
+python scripts/synthesize_tts_from_transcripts.py --max-chars 10000
+```
+
+Generate all available transcripts:
+
+```bash
+python scripts/synthesize_tts_from_transcripts.py
+```
+
+Restrict to the planned synthetic classes:
+
+```bash
+python scripts/synthesize_tts_from_transcripts.py \
+  --source-folder echomimic \
+  --source-folder memo
+```
+
+Outputs are written locally under:
+
+```text
+data/tts_audio/
+```
+
+`data/tts_audio/` is gitignored because generated speech is a local artifact.
+
+## Generate ElevenLabs Speech-To-Speech Alternatives
+
+For real clips, you can also preserve the original timing and delivery while
+changing the voice with ElevenLabs speech-to-speech. This uses the exported WAV
+files, not transcripts.
+
+Estimate the real-audio selection:
+
+```bash
+python scripts/convert_real_speech_elevenlabs.py --estimate-only
+```
+
+Run a tiny paid smoke test:
+
+```bash
+python scripts/convert_real_speech_elevenlabs.py --limit 2
+```
+
+Run a capped batch by audio duration:
+
+```bash
+python scripts/convert_real_speech_elevenlabs.py --max-seconds 600
+```
+
+Outputs are written locally under:
+
+```text
+data/tts_audio/elevenlabs_sts/real/
+```
+
+## Generate Google TTS For Real Transcripts
+
+If ElevenLabs credits are exhausted, use the existing Google STT transcripts
+with Google Cloud Text-to-Speech. By default this runs only `real` transcripts
+and rotates through several `en-US-Neural2-*` voices.
+
+Estimate selected characters:
+
+```bash
+python scripts/synthesize_google_tts_from_transcripts.py --estimate-only
+```
+
+Run a small smoke test:
+
+```bash
+python scripts/synthesize_google_tts_from_transcripts.py --limit 5
+```
+
+Run all available real transcripts:
+
+```bash
+python scripts/synthesize_google_tts_from_transcripts.py
+```
+
+Outputs are written locally under:
+
+```text
+data/tts_audio/google_tts/real/
+```
+
 See `docs/workflow.md` for the phase-based implementation guide.

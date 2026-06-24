@@ -10,6 +10,9 @@ data/quarantine/
 data/manifest.csv
 data/quarantine_log.csv
 data/splits/*.csv
+data/audio_wav/
+data/transcripts/
+data/tts_audio/
 data/features/audio/
 data/features/lips/
 models/checkpoints/
