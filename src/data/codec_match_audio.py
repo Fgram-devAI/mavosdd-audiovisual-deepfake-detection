@@ -137,9 +137,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--manifest", type=Path, default=common.AUDIO_SPOOF_MANIFEST)
     p.add_argument("--out-dir", type=Path,
-                   default=common.DATA_ROOT / "audio_wav_codec_matched")
+                   default=common.AUDIO_WAV_CODEC_MATCHED_DIR)
     p.add_argument("--out-manifest", type=Path,
-                   default=common.DERIVED_DIR / "audio_spoof_manifest_codec_matched.csv")
+                   default=common.AUDIO_SPOOF_MANIFEST_CODEC_MATCHED)
     p.add_argument("--overwrite", action="store_true")
     p.add_argument("--limit", type=int, default=None,
                    help="Process only the first N manifest rows (for smoke tests).")
