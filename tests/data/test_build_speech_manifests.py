@@ -421,3 +421,73 @@ def test_build_audio_spoof_manifest_inherits_split_for_generated(tmp_path):
                   for r in rows if r["audio_label"] == "spoof"}
     assert gen_by_src["src_a"] == "train"
     assert gen_by_src["src_b"] == "val"
+
+
+def test_build_visual_speech_manifest_emits_matched_and_generated_pairs(tmp_path):
+    from src.data.build_speech_manifests import build_visual_speech_manifest
+
+    p = _fixture_tree(tmp_path)
+    out = tmp_path / "derived" / "visual_speech_manifest.csv"
+
+    stats = build_visual_speech_manifest(
+        manifest_path=p["manifest"],
+        splits_dir=p["splits"],
+        tts_dir=p["tts"],
+        out_path=out,
+        providers=["elevenlabs", "google_tts"],
+    )
+    assert stats["matched_rows"] == 2
+    assert stats["generated_rows"] == 2
+
+    with out.open(newline="") as f:
+        rows = list(csv.DictReader(f))
+
+    by_pair_label = {}
+    for r in rows:
+        by_pair_label.setdefault(r["pair_label"], 0)
+        by_pair_label[r["pair_label"]] += 1
+    assert by_pair_label == {"matched_bonafide": 2, "generated_same_transcript": 2}
+
+    # Both row kinds carry a lip_feature_path pointing to the source video's lips.
+    for r in rows:
+        assert r["lip_feature_path"].endswith(f"data/features/lips/{r['source_video_id']}.npz")
+        assert r["media_type"] == "pair"
+
+    # Pair binaries match string labels.
+    for r in rows:
+        if r["pair_label"] == "matched_bonafide":
+            assert r["pair_label_binary"] == "0"
+        elif r["pair_label"] == "generated_same_transcript":
+            assert r["pair_label_binary"] == "1"
+
+
+def test_build_visual_speech_manifest_excludes_generated_without_native_source(tmp_path):
+    from src.data.build_speech_manifests import build_visual_speech_manifest
+
+    p = _fixture_tree(tmp_path)
+    # Add a TTS record whose source_video_id is not in data/manifest.csv.
+    _write_jsonl(p["tts"] / "manifest.jsonl", [
+        {"provider": "elevenlabs", "video_id": "src_a", "voice_id": "V1",
+         "source_folder": "real",
+         "synthetic_audio_path": "data/tts_audio/elevenlabs/real/src_a__voice-V1.mp3"},
+        {"provider": "elevenlabs", "video_id": "stranger", "voice_id": "Z",
+         "source_folder": "real",
+         "synthetic_audio_path": "data/tts_audio/elevenlabs/real/stranger__voice-Z.mp3"},
+    ])
+    # Add stranger to the split file so it survives split inheritance but
+    # still has no native lip source.
+    _write_split_csv(p["splits"] / "train.csv", ["src_a", "stranger"])
+
+    out = tmp_path / "derived" / "visual_speech_manifest.csv"
+    stats = build_visual_speech_manifest(
+        manifest_path=p["manifest"],
+        splits_dir=p["splits"],
+        tts_dir=p["tts"],
+        out_path=out,
+        providers=["elevenlabs", "google_tts"],
+    )
+
+    assert "stranger" in stats["excluded_no_native_source"]
+    with out.open(newline="") as f:
+        rows = list(csv.DictReader(f))
+    assert all(r["source_video_id"] != "stranger" for r in rows)

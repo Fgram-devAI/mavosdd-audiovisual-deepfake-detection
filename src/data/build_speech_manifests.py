@@ -315,3 +315,87 @@ def build_audio_spoof_manifest(
         "generated_rows": len(generated),
         "excluded": excluded,
     }
+
+
+def _matched_pair_row(native: dict) -> dict:
+    return {
+        "sample_id": f"pos__{native['source_video_id']}",
+        "source_video_id": native["source_video_id"],
+        "split": native["split"],
+        "media_type": "pair",
+        "source_folder": native["source_folder"],
+        "provider": "original",
+        "voice_id_or_name": "",
+        "audio_path": native["audio_path"],
+        "video_path": native["video_path"],
+        "audio_feature_path": native["audio_feature_path"],
+        "lip_feature_path": native["lip_feature_path"],
+        "audio_label": "bonafide",
+        "audio_label_binary": AUDIO_LABEL_BINARY_BY_STRING["bonafide"],
+        "video_label": native["video_label"],
+        "video_label_binary": VIDEO_LABEL_BINARY_BY_STRING[native["video_label"]],
+        "pair_label": "matched_bonafide",
+        "pair_label_binary": PAIR_LABEL_BINARY_BY_STRING["matched_bonafide"],
+    }
+
+
+def _generated_pair_row(gen: dict, native: dict) -> dict:
+    return {
+        "sample_id": gen["sample_id"],
+        "source_video_id": gen["source_video_id"],
+        "split": gen["split"],
+        "media_type": "pair",
+        "source_folder": gen["source_folder"] or native["source_folder"],
+        "provider": gen["provider"],
+        "voice_id_or_name": gen["voice_id_or_name"],
+        "audio_path": gen["audio_path"],
+        "video_path": native["video_path"],
+        "audio_feature_path": gen["audio_feature_path"],
+        "lip_feature_path": native["lip_feature_path"],
+        "audio_label": "spoof",
+        "audio_label_binary": AUDIO_LABEL_BINARY_BY_STRING["spoof"],
+        "video_label": native["video_label"],
+        "video_label_binary": VIDEO_LABEL_BINARY_BY_STRING[native["video_label"]],
+        "pair_label": "generated_same_transcript",
+        "pair_label_binary": PAIR_LABEL_BINARY_BY_STRING["generated_same_transcript"],
+    }
+
+
+def build_visual_speech_manifest(
+    manifest_path: Path,
+    splits_dir: Path,
+    tts_dir: Path,
+    out_path: Path,
+    providers: list[str],
+) -> dict:
+    split_map = load_split_map(splits_dir)
+    native = iter_native_rows(manifest_path, split_map)
+    native_by_id = {r["source_video_id"]: r for r in native}
+    tts_records = iter_tts_records(tts_dir, providers)
+    generated, _ = iter_generated_rows(
+        tts_records, split_map, _native_source_folder_map(native)
+    )
+
+    matched_rows = [_matched_pair_row(n) for n in native]
+
+    pair_rows: list[dict] = []
+    excluded_no_native: list[str] = []
+    for g in generated:
+        n = native_by_id.get(g["source_video_id"])
+        if n is None:
+            excluded_no_native.append(g["source_video_id"])
+            continue
+        pair_rows.append(_generated_pair_row(g, n))
+
+    if excluded_no_native:
+        logger.warning(
+            "build_visual_speech_manifest: %d generated rows excluded (no native lip source): %s",
+            len(excluded_no_native), excluded_no_native[:5],
+        )
+
+    write_manifest(matched_rows + pair_rows, out_path)
+    return {
+        "matched_rows": len(matched_rows),
+        "generated_rows": len(pair_rows),
+        "excluded_no_native_source": excluded_no_native,
+    }
