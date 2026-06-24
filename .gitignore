@@ -20,6 +20,9 @@ data/features/audio_wav2vec2/
 data/features/audio_wavlm/
 data/features/audio_hubert/
 data/features/audio_mel/
+data/features/audio_wav2vec2_codec/
+data/features/audio_wavlm_codec/
+data/features/audio_hubert_codec/
 data/derived/
 models/checkpoints/
 runs/

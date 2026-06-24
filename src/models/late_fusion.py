@@ -61,19 +61,28 @@ class LateFusionClassifier(nn.Module):
             nn.Linear(64, 1),
         )
 
-    def forward(self, audio: torch.Tensor, lips: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        audio: torch.Tensor,
+        lips: torch.Tensor | None = None,
+        mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         parts = []
         if self.audio is not None:
             parts.append(self.audio(audio.float()))
         if self.visual is not None:
+            if lips is None or mask is None:
+                raise ValueError(
+                    f"modality={self.modality!r} requires both 'lips' and 'mask'"
+                )
             parts.append(self.visual(lips.float(), mask.float()))
         return self.classifier(torch.cat(parts, dim=-1)).squeeze(-1)
 
 
 if __name__ == "__main__":
-    model = LateFusionClassifier("fusion")
+    model = LateFusionClassifier("audio")
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     assert n_params < 2_000_000, f"C5 violated: {n_params:,} params"
-    logits = model(torch.randn(8, 199, 768), torch.randn(8, 20, 84), torch.ones(8, 20))
+    logits = model(torch.randn(8, 199, 768))
     assert logits.shape == (8,), logits.shape
     print(f"OK - {n_params:,} trainable params | logits {tuple(logits.shape)}")
