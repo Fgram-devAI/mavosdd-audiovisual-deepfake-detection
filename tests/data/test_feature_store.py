@@ -356,3 +356,158 @@ def test_fusion_dataset_backend_selection_resolves_default_audio_root(tmp_path, 
     for backend in ("wav2vec2", "wavlm", "hubert"):
         ds = FusionFeatureDataset(manifest, split="train", backend=backend, lips_dir=lips_dir)
         assert ds[0]["audio"].shape == (199, 768)
+
+
+# ---------- Task 5: validate_feature_store + CLI ----------
+
+def test_validate_audio_view_ok(tmp_path):
+    from src.data.feature_store import validate_feature_store
+
+    manifest = tmp_path / "audio.csv"
+    audio_dir = tmp_path / "feat"
+    _write_manifest(manifest, [
+        _audio_row("a", split="train", audio_label_binary="0"),
+        _audio_row("b", split="val",   audio_label_binary="1"),
+    ])
+    _write_audio_npy(audio_dir, "a")
+    _write_audio_npy(audio_dir, "b")
+
+    report = validate_feature_store(
+        "audio", manifest, backend="wav2vec2", audio_dir=audio_dir,
+    )
+    assert report.view == "audio"
+    assert report.backend == "wav2vec2"
+    assert report.manifest_rows == 2
+    assert report.split_counts == {"train": 1, "val": 1}
+    assert report.label_counts == {"0": 1, "1": 1}
+    assert report.missing == []
+    assert report.bad_shape == []
+    assert report.path_mismatches == []
+
+
+def test_validate_reports_path_mismatch_as_warning_not_failure(tmp_path):
+    """audio_feature_path that disagrees with the reconstructed path is warned, not failed."""
+    from src.data import feature_store as fs
+
+    manifest = tmp_path / "audio.csv"
+    audio_dir = tmp_path / "feat"
+    row = _audio_row("a", split="train")
+    row["audio_feature_path"] = "data/features/audio/somewhere_else.npy"  # ≠ reconstructed
+    _write_manifest(manifest, [row])
+    _write_audio_npy(audio_dir, "a")
+
+    report = fs.validate_feature_store("audio", manifest, backend="wav2vec2", audio_dir=audio_dir)
+    assert report.missing == []
+    assert report.bad_shape == []
+    assert len(report.path_mismatches) == 1
+    assert "a" in report.path_mismatches[0]
+    assert "somewhere_else" in report.path_mismatches[0]
+
+    # CLI exit code must NOT trip on path_mismatches alone.
+    rc = fs.main([
+        "--validate", "--view", "audio", "--backend", "wav2vec2",
+        "--manifest", str(manifest), "--audio-dir", str(audio_dir),
+    ])
+    assert rc == 0
+
+
+def test_validate_audio_view_reports_missing_file(tmp_path):
+    from src.data.feature_store import validate_feature_store
+
+    manifest = tmp_path / "audio.csv"
+    audio_dir = tmp_path / "feat"
+    _write_manifest(manifest, [_audio_row("ghost", split="train")])
+
+    report = validate_feature_store("audio", manifest, backend="wav2vec2", audio_dir=audio_dir)
+    assert len(report.missing) == 1
+    assert "ghost" in report.missing[0]
+
+
+def test_validate_audio_view_reports_bad_shape(tmp_path):
+    from src.data.feature_store import validate_feature_store
+
+    manifest = tmp_path / "audio.csv"
+    audio_dir = tmp_path / "feat"
+    _write_manifest(manifest, [_audio_row("a", split="train")])
+    audio_dir.mkdir()
+    np.save(audio_dir / "a.npy", np.zeros((199, 512), dtype=np.float32))
+
+    report = validate_feature_store("audio", manifest, backend="wav2vec2", audio_dir=audio_dir)
+    assert report.missing == []
+    assert len(report.bad_shape) == 1
+    assert "a" in report.bad_shape[0]
+
+
+def test_validate_visual_view_reports_missing_and_bad_key(tmp_path):
+    from src.data.feature_store import validate_feature_store
+
+    manifest = tmp_path / "visual.csv"
+    lips_dir = tmp_path / "lips"
+    _write_manifest(manifest, [
+        _audio_row("a", split="train", source_video_id="vid_a"),
+        _audio_row("b", split="train", source_video_id="vid_b"),
+    ])
+    _write_lip_npz(lips_dir, "vid_b", key_override="wrong_key")
+
+    report = validate_feature_store("visual", manifest, lips_dir=lips_dir)
+    assert len(report.missing) == 1
+    assert "vid_a" in report.missing[0]
+    assert len(report.bad_shape) == 1
+    assert "vid_b" in report.bad_shape[0]
+
+
+def test_validate_fusion_view_requires_backend(tmp_path):
+    from src.data.feature_store import validate_feature_store, FeatureStoreValidationError
+
+    manifest = tmp_path / "fusion.csv"
+    _write_manifest(manifest, [_audio_row("a", split="train")])
+
+    with pytest.raises(FeatureStoreValidationError, match=r"backend.*required"):
+        validate_feature_store("fusion", manifest)
+
+
+def test_validate_fusion_view_ok(tmp_path):
+    from src.data.feature_store import validate_feature_store
+
+    manifest = tmp_path / "fusion.csv"
+    audio_dir = tmp_path / "audio_feat"
+    lips_dir = tmp_path / "lips"
+    _write_manifest(manifest, [_audio_row("a", split="train", source_video_id="vid_a")])
+    _write_audio_npy(audio_dir, "a")
+    _write_lip_npz(lips_dir, "vid_a")
+
+    report = validate_feature_store(
+        "fusion", manifest, backend="wav2vec2",
+        audio_dir=audio_dir, lips_dir=lips_dir,
+    )
+    assert report.missing == []
+    assert report.bad_shape == []
+
+
+def test_cli_validate_audio_returns_nonzero_on_missing(tmp_path):
+    from src.data import feature_store as fs
+
+    manifest = tmp_path / "audio.csv"
+    audio_dir = tmp_path / "feat"
+    _write_manifest(manifest, [_audio_row("ghost", split="train")])
+
+    rc = fs.main([
+        "--validate", "--view", "audio", "--backend", "wav2vec2",
+        "--manifest", str(manifest), "--audio-dir", str(audio_dir),
+    ])
+    assert rc == 1
+
+
+def test_cli_validate_audio_returns_zero_on_ok(tmp_path):
+    from src.data import feature_store as fs
+
+    manifest = tmp_path / "audio.csv"
+    audio_dir = tmp_path / "feat"
+    _write_manifest(manifest, [_audio_row("a", split="train")])
+    _write_audio_npy(audio_dir, "a")
+
+    rc = fs.main([
+        "--validate", "--view", "audio", "--backend", "wav2vec2",
+        "--manifest", str(manifest), "--audio-dir", str(audio_dir),
+    ])
+    assert rc == 0

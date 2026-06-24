@@ -234,3 +234,219 @@ class FusionFeatureDataset(Dataset):
         }
         item.update(_row_metadata(row))
         return item
+
+
+# ---------- Task 5: validate_feature_store + CLI ----------
+
+import argparse
+import sys
+from collections import Counter
+from dataclasses import dataclass, field
+
+
+_MAX_ERR_LIST = 10
+
+
+@dataclass(frozen=True)
+class ValidationReport:
+    view: str
+    backend: str | None
+    manifest_rows: int
+    split_counts: dict[str, int]
+    label_counts: dict[str, int]
+    missing: list[str] = field(default_factory=list)
+    bad_shape: list[str] = field(default_factory=list)
+    path_mismatches: list[str] = field(default_factory=list)
+    truncated_missing: int = 0
+    truncated_bad_shape: int = 0
+    truncated_path_mismatches: int = 0
+
+
+_LABEL_COLUMN_BY_VIEW = {
+    "audio": "audio_label_binary",
+    "visual": "pair_label_binary",
+    "fusion": "pair_label_binary",
+}
+
+
+def _check_audio_row(row: dict, audio_dir: Path) -> tuple[str | None, str | None, str | None]:
+    sid = row.get("sample_id", "?")
+    path = audio_dir / f"{sid}.npy"
+    manifest_path = row.get("audio_feature_path", "") or ""
+    mismatch = None
+    if manifest_path and Path(manifest_path) != path:
+        mismatch = f"{sid}: reconstructed={path} manifest={manifest_path}"
+    if not path.exists():
+        return f"{sid}: {path} not found", None, mismatch
+    try:
+        _load_audio_array(path)
+    except FeatureStoreValidationError as exc:
+        return None, f"{sid}: {exc}", mismatch
+    return None, None, mismatch
+
+
+def _check_lip_row(row: dict, lips_dir: Path) -> tuple[str | None, str | None, str | None]:
+    vid = row.get("source_video_id", "?")
+    sid = row.get("sample_id", vid)
+    path = lips_dir / f"{vid}.npz"
+    manifest_path = row.get("lip_feature_path", "") or ""
+    mismatch = None
+    if manifest_path and Path(manifest_path) != path:
+        mismatch = f"{sid}: reconstructed={path} manifest={manifest_path}"
+    if not path.exists():
+        return f"{vid}: {path} not found", None, mismatch
+    try:
+        _load_lip_array(path)
+    except FeatureStoreValidationError as exc:
+        return None, f"{vid}: {exc}", mismatch
+    return None, None, mismatch
+
+
+def validate_feature_store(
+    view: str,
+    manifest_path: str | Path,
+    *,
+    backend: str | None = None,
+    audio_dir: Path | None = None,
+    lips_dir: Path | None = None,
+) -> ValidationReport:
+    if view not in _LABEL_COLUMN_BY_VIEW:
+        raise FeatureStoreValidationError(
+            f"unknown view: {view!r}. Supported: {sorted(_LABEL_COLUMN_BY_VIEW)}"
+        )
+    if view in {"audio", "fusion"} and backend is None:
+        raise FeatureStoreValidationError(f"backend is required for view={view!r}")
+
+    audio_root = (
+        Path(audio_dir) if audio_dir is not None
+        else (resolve_audio_backend_dir(backend) if backend else None)
+    )
+    lips_root = Path(lips_dir) if lips_dir is not None else common.FEAT_LIPS_DIR
+
+    rows = _read_manifest_rows(manifest_path)
+    split_counts = Counter(r.get("split", "?") for r in rows)
+    label_counts = Counter(r.get(_LABEL_COLUMN_BY_VIEW[view], "") for r in rows)
+
+    missing: list[str] = []
+    bad_shape: list[str] = []
+    path_mismatches: list[str] = []
+    truncated_missing = 0
+    truncated_bad_shape = 0
+    truncated_path_mismatches = 0
+
+    def _record_missing(msg: str) -> None:
+        nonlocal truncated_missing
+        if len(missing) < _MAX_ERR_LIST:
+            missing.append(msg)
+        else:
+            truncated_missing += 1
+
+    def _record_bad(msg: str) -> None:
+        nonlocal truncated_bad_shape
+        if len(bad_shape) < _MAX_ERR_LIST:
+            bad_shape.append(msg)
+        else:
+            truncated_bad_shape += 1
+
+    def _record_mismatch(msg: str) -> None:
+        nonlocal truncated_path_mismatches
+        if len(path_mismatches) < _MAX_ERR_LIST:
+            path_mismatches.append(msg)
+        else:
+            truncated_path_mismatches += 1
+
+    for row in rows:
+        if view in {"audio", "fusion"}:
+            miss, bad, mismatch = _check_audio_row(row, audio_root)
+            if miss:
+                _record_missing(miss)
+            if bad:
+                _record_bad(bad)
+            if mismatch:
+                _record_mismatch(mismatch)
+        if view in {"visual", "fusion"}:
+            miss, bad, mismatch = _check_lip_row(row, lips_root)
+            if miss:
+                _record_missing(miss)
+            if bad:
+                _record_bad(bad)
+            if mismatch:
+                _record_mismatch(mismatch)
+
+    return ValidationReport(
+        view=view,
+        backend=backend,
+        manifest_rows=len(rows),
+        split_counts=dict(split_counts),
+        label_counts=dict(label_counts),
+        missing=missing,
+        bad_shape=bad_shape,
+        path_mismatches=path_mismatches,
+        truncated_missing=truncated_missing,
+        truncated_bad_shape=truncated_bad_shape,
+        truncated_path_mismatches=truncated_path_mismatches,
+    )
+
+
+_DEFAULT_MANIFEST_BY_VIEW = {
+    "audio": common.AUDIO_SPOOF_MANIFEST,
+    "visual": common.VISUAL_SPEECH_MANIFEST,
+    "fusion": common.FUSION_SPEECH_MANIFEST,
+}
+
+
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        prog="feature_store",
+        description="Validate cached feature stores referenced by a derived manifest.",
+    )
+    p.add_argument("--validate", action="store_true", required=True,
+                   help="Run the validation pipeline. Currently the only mode.")
+    p.add_argument("--view", required=True, choices=("audio", "visual", "fusion"),
+                   help="Dataset view to validate.")
+    p.add_argument("--backend", choices=SUPPORTED_BACKENDS, default=None,
+                   help="Audio backend. Required for audio/fusion views.")
+    p.add_argument("--manifest", type=Path, default=None,
+                   help="Override the default manifest path for the chosen view.")
+    p.add_argument("--audio-dir", type=Path, default=None,
+                   help="Override the backend audio feature root.")
+    p.add_argument("--lips-dir", type=Path, default=None,
+                   help="Override the lip feature root.")
+    return p
+
+
+def _print_report(report: ValidationReport) -> None:
+    print(f"view={report.view} backend={report.backend} rows={report.manifest_rows}")
+    print(f"split_counts={report.split_counts}")
+    print(f"label_counts={report.label_counts}")
+    print(
+        f"missing={len(report.missing) + report.truncated_missing} "
+        f"bad_shape={len(report.bad_shape) + report.truncated_bad_shape} "
+        f"path_mismatches={len(report.path_mismatches) + report.truncated_path_mismatches}"
+    )
+    for entry in report.missing[:5]:
+        print(f"  MISSING {entry}")
+    for entry in report.bad_shape[:5]:
+        print(f"  BAD_SHAPE {entry}")
+    for entry in report.path_mismatches[:5]:
+        print(f"  PATH_MISMATCH {entry}")
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    manifest_path = args.manifest if args.manifest is not None else _DEFAULT_MANIFEST_BY_VIEW[args.view]
+    report = validate_feature_store(
+        args.view,
+        manifest_path,
+        backend=args.backend,
+        audio_dir=args.audio_dir,
+        lips_dir=args.lips_dir,
+    )
+    _print_report(report)
+    has_errors = bool(report.missing) or bool(report.bad_shape) \
+        or report.truncated_missing or report.truncated_bad_shape
+    return 1 if has_errors else 0
+
+
+if __name__ == "__main__":  # pragma: no cover
+    sys.exit(main())
