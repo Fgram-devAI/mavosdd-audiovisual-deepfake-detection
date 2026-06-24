@@ -4,6 +4,7 @@ from __future__ import annotations
 import csv
 import json
 import logging
+import os
 import re
 from pathlib import Path
 
@@ -430,3 +431,152 @@ def build_fusion_speech_manifest(
         "bonafide_rows": len(bonafide_rows),
         "spoof_rows": len(spoof_rows),
     }
+
+
+_REQUIRED_MANIFESTS = (
+    "audio_spoof_manifest.csv",
+    "visual_speech_manifest.csv",
+    "fusion_speech_manifest.csv",
+)
+
+
+def _binary_mismatch(row: dict) -> list[str]:
+    issues: list[str] = []
+    a_lbl = row.get("audio_label", "")
+    a_bin = str(row.get("audio_label_binary", ""))
+    if a_lbl in AUDIO_LABEL_BINARY_BY_STRING:
+        expected = str(AUDIO_LABEL_BINARY_BY_STRING[a_lbl])
+        if a_bin != expected:
+            issues.append(
+                f"audio_label_binary mismatch for {row.get('sample_id')}: "
+                f"label={a_lbl} binary={a_bin} (expected {expected})"
+            )
+    v_lbl = row.get("video_label", "")
+    v_bin = str(row.get("video_label_binary", ""))
+    if v_lbl in VIDEO_LABEL_BINARY_BY_STRING:
+        expected = str(VIDEO_LABEL_BINARY_BY_STRING[v_lbl])
+        if v_bin != expected:
+            issues.append(
+                f"video_label_binary mismatch for {row.get('sample_id')}: "
+                f"label={v_lbl} binary={v_bin} (expected {expected})"
+            )
+    p_lbl = row.get("pair_label", "")
+    p_bin = str(row.get("pair_label_binary", ""))
+    if p_lbl in PAIR_LABEL_BINARY_BY_STRING:
+        expected = str(PAIR_LABEL_BINARY_BY_STRING[p_lbl])
+        if p_bin != expected:
+            issues.append(
+                f"pair_label_binary mismatch for {row.get('sample_id')}: "
+                f"label={p_lbl} binary={p_bin} (expected {expected})"
+            )
+    return issues
+
+
+def _check_split_leakage(splits_dir: Path) -> list[str]:
+    seen: dict[str, str] = {}
+    issues: list[str] = []
+    for split in SPLIT_NAMES:
+        path = splits_dir / f"{split}.csv"
+        if not path.exists():
+            issues.append(f"required input missing: {path}")
+            continue
+        with path.open(newline="") as f:
+            for row in csv.DictReader(f):
+                vid = row["video_id"]
+                if vid in seen and seen[vid] != split:
+                    issues.append(f"split leakage: {vid} in {seen[vid]} and {split}")
+                seen[vid] = split
+    return issues
+
+
+def _read_manifest_rows(path: Path) -> list[dict]:
+    with path.open(newline="") as f:
+        return list(csv.DictReader(f))
+
+
+def validate_manifests(
+    out_dir: Path,
+    manifest_path: Path,
+    splits_dir: Path,
+) -> list[str]:
+    issues: list[str] = []
+    out_dir = Path(out_dir)
+    manifest_path = Path(manifest_path)
+    splits_dir = Path(splits_dir)
+    skip_path_check = os.environ.get("SPEECH_MANIFEST_SKIP_PATH_EXISTS") == "1"
+
+    # §9.1: required input files exist.
+    if not manifest_path.exists():
+        issues.append(f"required input missing: {manifest_path}")
+    for name in _REQUIRED_MANIFESTS:
+        if not (out_dir / name).exists():
+            issues.append(f"required input missing: {out_dir / name}")
+    issues.extend(_check_split_leakage(splits_dir))
+    if issues:
+        return issues
+
+    # §9.2 + native pre-pass.
+    split_seen: dict[str, str] = {}
+    for split in SPLIT_NAMES:
+        with (splits_dir / f"{split}.csv").open(newline="") as f:
+            for row in csv.DictReader(f):
+                split_seen[row["video_id"]] = split
+
+    with manifest_path.open(newline="") as f:
+        native_ids = [row["video_id"] for row in csv.DictReader(f)]
+    for vid in native_ids:
+        if vid not in split_seen:
+            issues.append(f"native video has no split: {vid}")
+
+    # Walk each output manifest.
+    for name in _REQUIRED_MANIFESTS:
+        path = out_dir / name
+        rows = _read_manifest_rows(path)
+        seen_sample_ids: set[str] = set()
+        for row in rows:
+            sid = row.get("sample_id", "")
+            if sid in seen_sample_ids:
+                issues.append(f"duplicate sample_id in {name}: {sid}")
+            seen_sample_ids.add(sid)
+
+            # §9.6: original echomimic/memo audio must remain bonafide.
+            if (row.get("provider") == "original"
+                    and row.get("source_folder") in ("echomimic", "memo")
+                    and row.get("audio_label") != "bonafide"):
+                issues.append(
+                    f"{name}: {row.get('source_folder')} original audio relabeled spoof: {sid}"
+                )
+
+            # §9.7: generated rows must be spoof.
+            if (row.get("provider") in ("elevenlabs", "google_tts", "elevenlabs_sts")
+                    and row.get("media_type") == "audio"
+                    and row.get("audio_label") != "spoof"):
+                issues.append(
+                    f"{name}: generated row not labeled spoof: {sid}"
+                )
+
+            # §9.4 + §9.5: generated rows inherit source split.
+            if row.get("provider") in ("elevenlabs", "google_tts", "elevenlabs_sts"):
+                sv = row.get("source_video_id", "")
+                expected = split_seen.get(sv)
+                if expected is None:
+                    issues.append(
+                        f"{name}: generated row with unknown source_video_id: {sid} -> {sv}"
+                    )
+                elif row.get("split") != expected:
+                    issues.append(
+                        f"{name}: generated row split mismatch for {sid}: "
+                        f"row={row.get('split')} source={expected}"
+                    )
+
+            # §9.8: label/binary consistency.
+            issues.extend(_binary_mismatch(row))
+
+            # §9.9: declared media paths must exist on disk.
+            if not skip_path_check:
+                for col in ("audio_path", "video_path"):
+                    p = row.get(col, "")
+                    if p and not Path(p).exists():
+                        issues.append(f"{name}: missing {col} for {sid}: {p}")
+
+    return issues

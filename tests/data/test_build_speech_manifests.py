@@ -526,3 +526,119 @@ def test_build_fusion_speech_manifest_has_bonafide_and_spoof_rows(tmp_path):
     for r in rows:
         assert r["lip_feature_path"]
         assert r["audio_feature_path"]
+
+
+def test_validate_manifests_passes_on_clean_fixture(tmp_path, monkeypatch):
+    from src.data.build_speech_manifests import (
+        build_audio_spoof_manifest, build_visual_speech_manifest,
+        build_fusion_speech_manifest, validate_manifests,
+    )
+
+    p = _fixture_tree(tmp_path)
+    out_dir = tmp_path / "derived"
+    build_audio_spoof_manifest(p["manifest"], p["splits"], p["tts"],
+                               out_dir / "audio_spoof_manifest.csv",
+                               ["elevenlabs", "google_tts"])
+    build_visual_speech_manifest(p["manifest"], p["splits"], p["tts"],
+                                 out_dir / "visual_speech_manifest.csv",
+                                 ["elevenlabs", "google_tts"])
+    build_fusion_speech_manifest(p["manifest"], p["splits"], p["tts"],
+                                 out_dir / "fusion_speech_manifest.csv",
+                                 ["elevenlabs", "google_tts"])
+    # Skip on-disk-path existence check (clean unit; files are stubs only).
+    monkeypatch.setenv("SPEECH_MANIFEST_SKIP_PATH_EXISTS", "1")
+    issues = validate_manifests(out_dir, p["manifest"], p["splits"])
+    assert issues == []
+
+
+def test_validate_manifests_detects_split_leakage(tmp_path, monkeypatch):
+    from src.data.build_speech_manifests import validate_manifests, write_manifest
+
+    out_dir = tmp_path / "derived"
+    # Build splits where 'dup' appears in both train and val.
+    splits = tmp_path / "splits"
+    _write_split_csv(splits / "train.csv", ["dup", "x"])
+    _write_split_csv(splits / "val.csv", ["dup"])
+    _write_split_csv(splits / "test.csv", ["y"])
+    manifest = tmp_path / "manifest.csv"
+    _write_manifest_csv(manifest, [("dup", "real"), ("x", "real"), ("y", "real")])
+
+    # Write empty derived manifests to satisfy "files exist".
+    for name in ("audio_spoof_manifest.csv", "visual_speech_manifest.csv",
+                 "fusion_speech_manifest.csv"):
+        write_manifest([], out_dir / name)
+
+    monkeypatch.setenv("SPEECH_MANIFEST_SKIP_PATH_EXISTS", "1")
+    issues = validate_manifests(out_dir, manifest, splits)
+    assert any("dup" in s and "leakage" in s.lower() for s in issues)
+
+
+def test_validate_manifests_detects_label_binary_mismatch(tmp_path, monkeypatch):
+    from src.data.build_speech_manifests import (SCHEMA, validate_manifests,
+                                                  write_manifest)
+
+    p = _fixture_tree(tmp_path)
+    out_dir = tmp_path / "derived"
+    # Write a fusion manifest row with mismatched audio_label_binary.
+    bad_row = {col: "" for col in SCHEMA}
+    bad_row.update({
+        "sample_id": "bad", "source_video_id": "src_a", "split": "train",
+        "media_type": "pair", "source_folder": "real", "provider": "original",
+        "audio_path": "", "video_path": "", "audio_feature_path": "x",
+        "lip_feature_path": "y",
+        "audio_label": "bonafide", "audio_label_binary": 1,   # mismatch!
+        "video_label": "real", "video_label_binary": 0,
+        "pair_label": "matched_bonafide", "pair_label_binary": 0,
+    })
+    write_manifest([bad_row], out_dir / "fusion_speech_manifest.csv")
+    write_manifest([], out_dir / "audio_spoof_manifest.csv")
+    write_manifest([], out_dir / "visual_speech_manifest.csv")
+
+    monkeypatch.setenv("SPEECH_MANIFEST_SKIP_PATH_EXISTS", "1")
+    issues = validate_manifests(out_dir, p["manifest"], p["splits"])
+    assert any("audio_label_binary" in s for s in issues)
+
+
+def test_validate_manifests_detects_duplicate_sample_ids(tmp_path, monkeypatch):
+    from src.data.build_speech_manifests import (SCHEMA, validate_manifests,
+                                                  write_manifest)
+
+    p = _fixture_tree(tmp_path)
+    out_dir = tmp_path / "derived"
+    base = {col: "" for col in SCHEMA}
+    base.update({
+        "sample_id": "same", "source_video_id": "src_a", "split": "train",
+        "media_type": "audio", "source_folder": "real", "provider": "elevenlabs",
+        "audio_label": "spoof", "audio_label_binary": 1,
+        "video_label": "na", "video_label_binary": "",
+    })
+    write_manifest([base, dict(base)], out_dir / "audio_spoof_manifest.csv")
+    write_manifest([], out_dir / "visual_speech_manifest.csv")
+    write_manifest([], out_dir / "fusion_speech_manifest.csv")
+
+    monkeypatch.setenv("SPEECH_MANIFEST_SKIP_PATH_EXISTS", "1")
+    issues = validate_manifests(out_dir, p["manifest"], p["splits"])
+    assert any("duplicate sample_id" in s for s in issues)
+
+
+def test_validate_manifests_detects_echomimic_audio_relabeled_spoof(tmp_path, monkeypatch):
+    from src.data.build_speech_manifests import (SCHEMA, validate_manifests,
+                                                  write_manifest)
+
+    p = _fixture_tree(tmp_path)
+    out_dir = tmp_path / "derived"
+    bad = {col: "" for col in SCHEMA}
+    bad.update({
+        "sample_id": "src_b", "source_video_id": "src_b", "split": "val",
+        "media_type": "video", "source_folder": "echomimic", "provider": "original",
+        "audio_label": "spoof",  # forbidden!
+        "audio_label_binary": 1,
+        "video_label": "fake", "video_label_binary": 1,
+    })
+    write_manifest([bad], out_dir / "audio_spoof_manifest.csv")
+    write_manifest([], out_dir / "visual_speech_manifest.csv")
+    write_manifest([], out_dir / "fusion_speech_manifest.csv")
+
+    monkeypatch.setenv("SPEECH_MANIFEST_SKIP_PATH_EXISTS", "1")
+    issues = validate_manifests(out_dir, p["manifest"], p["splits"])
+    assert any("echomimic" in s.lower() and "spoof" in s.lower() for s in issues)
