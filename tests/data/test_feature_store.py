@@ -634,3 +634,74 @@ def test_fit_normalization_lips_only(tmp_path):
     assert stats.audio_std is None
     assert stats.lips_mean.shape == (84,)
     assert stats.lips_std.shape == (84,)
+
+
+# ---------- Task 7: collate + make_dataloader ----------
+
+def test_feature_collate_stacks_audio_lips_label_and_keeps_metadata(tmp_path):
+    from src.data.feature_store import FusionFeatureDataset, feature_collate
+
+    manifest = tmp_path / "fusion.csv"
+    audio_dir = tmp_path / "audio_feat"
+    lips_dir = tmp_path / "lips"
+    _write_manifest(manifest, [
+        _audio_row("a", split="train", source_video_id="vid_a"),
+        _audio_row("b", split="train", source_video_id="vid_b"),
+    ])
+    for sid in ("a", "b"):
+        _write_audio_npy(audio_dir, sid)
+    for vid in ("vid_a", "vid_b"):
+        _write_lip_npz(lips_dir, vid)
+
+    ds = FusionFeatureDataset(
+        manifest, split="train", backend="wav2vec2",
+        audio_dir=audio_dir, lips_dir=lips_dir,
+    )
+    batch = feature_collate([ds[0], ds[1]])
+
+    assert batch["audio"].shape == (2, 199, 768)
+    assert batch["lips"].shape == (2, 20, 84)
+    assert batch["lips_mask"].shape == (2, 20)
+    assert batch["label"].shape == (2,)
+    assert batch["label"].dtype == torch.long
+    assert isinstance(batch["metadata"], list)
+    assert batch["metadata"][0]["sample_id"] == "a"
+    assert batch["metadata"][1]["sample_id"] == "b"
+
+
+def test_feature_collate_raises_on_shape_mismatch(tmp_path):
+    from src.data.feature_store import feature_collate, FeatureStoreValidationError
+
+    item_a = {
+        "audio": torch.zeros(199, 768),
+        "label": torch.tensor(0, dtype=torch.long),
+        "sample_id": "a", "source_video_id": "a", "split": "train",
+        "provider": "x", "source_folder": "y",
+    }
+    item_b = {
+        "audio": torch.zeros(200, 768),  # mismatched time
+        "label": torch.tensor(1, dtype=torch.long),
+        "sample_id": "b", "source_video_id": "b", "split": "train",
+        "provider": "x", "source_folder": "y",
+    }
+    with pytest.raises(FeatureStoreValidationError, match=r"audio.*shape mismatch"):
+        feature_collate([item_a, item_b])
+
+
+def test_make_dataloader_iterates_one_batch(tmp_path):
+    from src.data.feature_store import AudioFeatureDataset, make_dataloader
+
+    manifest = tmp_path / "audio.csv"
+    audio_dir = tmp_path / "feat"
+    _write_manifest(manifest, [_audio_row("a", split="train"), _audio_row("b", split="train")])
+    _write_audio_npy(audio_dir, "a")
+    _write_audio_npy(audio_dir, "b")
+
+    ds = AudioFeatureDataset(manifest, split="train", backend="wav2vec2", audio_dir=audio_dir)
+    loader = make_dataloader(ds, batch_size=2, shuffle=False, num_workers=0)
+
+    batches = list(loader)
+    assert len(batches) == 1
+    assert batches[0]["audio"].shape == (2, 199, 768)
+    assert batches[0]["label"].shape == (2,)
+    assert len(batches[0]["metadata"]) == 2

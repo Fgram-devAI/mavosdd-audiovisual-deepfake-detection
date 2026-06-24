@@ -548,5 +548,61 @@ def fit_normalization_stats(
     )
 
 
+# ---------- Task 7: collate + make_dataloader ----------
+
+from torch.utils.data import DataLoader
+
+
+_TENSOR_KEYS: tuple[str, ...] = ("audio", "lips", "lips_mask")
+
+
+def _stack_or_raise(key: str, tensors: list[torch.Tensor]) -> torch.Tensor:
+    base_shape = tensors[0].shape
+    for i, t in enumerate(tensors[1:], start=1):
+        if t.shape != base_shape:
+            raise FeatureStoreValidationError(
+                f"{key} shape mismatch in batch: row 0 has {tuple(base_shape)}, "
+                f"row {i} has {tuple(t.shape)}"
+            )
+    return torch.stack(tensors, dim=0)
+
+
+def feature_collate(items: list[dict]) -> dict:
+    if not items:
+        raise FeatureStoreValidationError("feature_collate received an empty batch")
+
+    out: dict = {}
+    for key in _TENSOR_KEYS:
+        if all(key in item for item in items):
+            out[key] = _stack_or_raise(key, [item[key] for item in items])
+
+    labels = [item["label"] for item in items]
+    out["label"] = torch.stack([lab.reshape(()) for lab in labels], dim=0)
+
+    out["metadata"] = [
+        {k: item[k] for k in _METADATA_KEYS if k in item}
+        for item in items
+    ]
+    return out
+
+
+def make_dataloader(
+    dataset,
+    *,
+    batch_size: int,
+    shuffle: bool = False,
+    num_workers: int = 0,
+    drop_last: bool = False,
+) -> DataLoader:
+    return DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=shuffle,
+        num_workers=num_workers,
+        drop_last=drop_last,
+        collate_fn=feature_collate,
+    )
+
+
 if __name__ == "__main__":  # pragma: no cover
     sys.exit(main())
