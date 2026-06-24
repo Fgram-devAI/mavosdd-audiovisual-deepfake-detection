@@ -15,6 +15,9 @@ data/transcripts/
 data/tts_audio/
 data/features/audio/
 data/features/lips/
+data/features/audio_wav2vec2/
+data/features/audio_wavlm/
+data/features/audio_hubert/
 data/derived/
 models/checkpoints/
 runs/
