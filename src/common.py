@@ -14,6 +14,13 @@ FEAT_LIPS_DIR = DATA_ROOT / "features" / "lips"
 SPLITS_DIR = DATA_ROOT / "splits"
 MANIFEST = DATA_ROOT / "manifest.csv"
 QUARANTINE_LOG = DATA_ROOT / "quarantine_log.csv"
+AUDIO_WAV_DIR = DATA_ROOT / "audio_wav"
+TTS_AUDIO_DIR = DATA_ROOT / "tts_audio"
+FEAT_AUDIO_GEN_DIR = DATA_ROOT / "features" / "audio_generated"
+DERIVED_DIR = DATA_ROOT / "derived"
+AUDIO_SPOOF_MANIFEST = DERIVED_DIR / "audio_spoof_manifest.csv"
+VISUAL_SPEECH_MANIFEST = DERIVED_DIR / "visual_speech_manifest.csv"
+FUSION_SPEECH_MANIFEST = DERIVED_DIR / "fusion_speech_manifest.csv"
 
 CAPS = {"real": 500, "echomimic": 250, "memo": 250}
 LABEL_MAP = {"real": 0, "echomimic": 1, "memo": 1}
