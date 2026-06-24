@@ -108,11 +108,13 @@ class AudioFeatureDataset(Dataset):
         split: str,
         backend: str,
         audio_dir: Path | None = None,
+        normalization: "NormalizationStats | None" = None,
     ) -> None:
         self._rows = _filter_split(_read_manifest_rows(manifest_path), split)
         self._audio_dir = Path(audio_dir) if audio_dir is not None else resolve_audio_backend_dir(backend)
         self.backend = backend
         self.split = split
+        self._normalization = normalization
 
     def __len__(self) -> int:
         return len(self._rows)
@@ -121,8 +123,10 @@ class AudioFeatureDataset(Dataset):
         row = self._rows[idx]
         audio_path = self._audio_dir / f"{row['sample_id']}.npy"
         arr = _load_audio_array(audio_path)
+        audio = torch.from_numpy(arr)
+        audio = _maybe_normalize_audio(audio, self._normalization)
         item = {
-            "audio": torch.from_numpy(arr),
+            "audio": audio,
             "label": _label_long(row, "audio_label_binary"),
         }
         item.update(_row_metadata(row))
@@ -180,10 +184,12 @@ class VisualFeatureDataset(Dataset):
         *,
         split: str,
         lips_dir: Path | None = None,
+        normalization: "NormalizationStats | None" = None,
     ) -> None:
         self._rows = _filter_split(_read_manifest_rows(manifest_path), split)
         self._lips_dir = Path(lips_dir) if lips_dir is not None else common.FEAT_LIPS_DIR
         self.split = split
+        self._normalization = normalization
 
     def __len__(self) -> int:
         return len(self._rows)
@@ -192,8 +198,10 @@ class VisualFeatureDataset(Dataset):
         row = self._rows[idx]
         lip_path = self._lips_dir / f"{row['source_video_id']}.npz"
         feats, mask = _load_lip_array(lip_path)
+        lips = torch.from_numpy(feats)
+        lips = _maybe_normalize_lips(lips, self._normalization)
         item = {
-            "lips": torch.from_numpy(feats),
+            "lips": lips,
             "lips_mask": torch.from_numpy(mask),
             "label": _label_long(row, "pair_label_binary"),
         }
@@ -212,12 +220,14 @@ class FusionFeatureDataset(Dataset):
         backend: str,
         audio_dir: Path | None = None,
         lips_dir: Path | None = None,
+        normalization: "NormalizationStats | None" = None,
     ) -> None:
         self._rows = _filter_split(_read_manifest_rows(manifest_path), split)
         self._audio_dir = Path(audio_dir) if audio_dir is not None else resolve_audio_backend_dir(backend)
         self._lips_dir = Path(lips_dir) if lips_dir is not None else common.FEAT_LIPS_DIR
         self.backend = backend
         self.split = split
+        self._normalization = normalization
 
     def __len__(self) -> int:
         return len(self._rows)
@@ -226,9 +236,13 @@ class FusionFeatureDataset(Dataset):
         row = self._rows[idx]
         audio_arr = _load_audio_array(self._audio_dir / f"{row['sample_id']}.npy")
         feats, mask = _load_lip_array(self._lips_dir / f"{row['source_video_id']}.npz")
+        audio = torch.from_numpy(audio_arr)
+        audio = _maybe_normalize_audio(audio, self._normalization)
+        lips = torch.from_numpy(feats)
+        lips = _maybe_normalize_lips(lips, self._normalization)
         item = {
-            "audio": torch.from_numpy(audio_arr),
-            "lips": torch.from_numpy(feats),
+            "audio": audio,
+            "lips": lips,
             "lips_mask": torch.from_numpy(mask),
             "label": _label_long(row, "pair_label_binary"),
         }
@@ -446,6 +460,92 @@ def main(argv: list[str] | None = None) -> int:
     has_errors = bool(report.missing) or bool(report.bad_shape) \
         or report.truncated_missing or report.truncated_bad_shape
     return 1 if has_errors else 0
+
+
+# ---------- Task 6: train-only normalization ----------
+
+@dataclass(frozen=True)
+class NormalizationStats:
+    audio_mean: np.ndarray | None
+    audio_std: np.ndarray | None
+    lips_mean: np.ndarray | None
+    lips_std: np.ndarray | None
+    eps: float = 1e-6
+
+
+def _maybe_normalize_audio(audio: torch.Tensor, stats: "NormalizationStats | None") -> torch.Tensor:
+    if stats is None or stats.audio_mean is None or stats.audio_std is None:
+        return audio
+    mean = torch.from_numpy(np.asarray(stats.audio_mean, dtype=np.float32))
+    std = torch.from_numpy(np.asarray(stats.audio_std, dtype=np.float32))
+    return (audio - mean) / (std + stats.eps)
+
+
+def _maybe_normalize_lips(lips: torch.Tensor, stats: "NormalizationStats | None") -> torch.Tensor:
+    if stats is None or stats.lips_mean is None or stats.lips_std is None:
+        return lips
+    mean = torch.from_numpy(np.asarray(stats.lips_mean, dtype=np.float32))
+    std = torch.from_numpy(np.asarray(stats.lips_std, dtype=np.float32))
+    return (lips - mean) / (std + stats.eps)
+
+
+def fit_normalization_stats(
+    dataset,
+    *,
+    modalities: tuple[str, ...] = ("audio", "lips"),
+    eps: float = 1e-6,
+) -> "NormalizationStats":
+    ds_split = getattr(dataset, "split", None)
+    if ds_split is None:
+        raise FeatureStoreValidationError(
+            "fit_normalization_stats: dataset has no 'split' attribute; "
+            "only train datasets may be fitted"
+        )
+    if ds_split != "train":
+        raise FeatureStoreValidationError(
+            f"fit_normalization_stats: dataset.split={ds_split!r}; "
+            "normalization stats must be fitted on the train split only"
+        )
+
+    audio_sum = audio_sqsum = None
+    audio_count = 0
+    lips_sum = lips_sqsum = None
+    lips_count = 0
+
+    for i in range(len(dataset)):
+        item = dataset[i]
+        if "audio" in modalities and "audio" in item:
+            x = item["audio"].numpy().astype(np.float64)
+            if audio_sum is None:
+                audio_sum = np.zeros(x.shape[1], dtype=np.float64)
+                audio_sqsum = np.zeros(x.shape[1], dtype=np.float64)
+            audio_sum += x.sum(axis=0)
+            audio_sqsum += (x * x).sum(axis=0)
+            audio_count += x.shape[0]
+        if "lips" in modalities and "lips" in item:
+            x = item["lips"].numpy().astype(np.float64)
+            if lips_sum is None:
+                lips_sum = np.zeros(x.shape[1], dtype=np.float64)
+                lips_sqsum = np.zeros(x.shape[1], dtype=np.float64)
+            lips_sum += x.sum(axis=0)
+            lips_sqsum += (x * x).sum(axis=0)
+            lips_count += x.shape[0]
+
+    def _finalize(sum_, sqsum_, count_):
+        if sum_ is None or count_ == 0:
+            return None, None
+        mean = sum_ / count_
+        var = np.maximum(sqsum_ / count_ - mean * mean, 0.0)
+        std = np.sqrt(var)
+        return mean.astype(np.float32), std.astype(np.float32)
+
+    audio_mean, audio_std = _finalize(audio_sum, audio_sqsum, audio_count)
+    lips_mean, lips_std = _finalize(lips_sum, lips_sqsum, lips_count)
+    return NormalizationStats(
+        audio_mean=audio_mean, audio_std=audio_std,
+        lips_mean=lips_mean, lips_std=lips_std,
+        eps=eps,
+    )
 
 
 if __name__ == "__main__":  # pragma: no cover

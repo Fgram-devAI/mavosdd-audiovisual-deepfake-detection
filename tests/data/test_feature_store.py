@@ -511,3 +511,126 @@ def test_cli_validate_audio_returns_zero_on_ok(tmp_path):
         "--manifest", str(manifest), "--audio-dir", str(audio_dir),
     ])
     assert rc == 0
+
+
+# ---------- Task 6: normalization ----------
+
+def test_fit_normalization_stats_audio_only(tmp_path):
+    from src.data.feature_store import (
+        AudioFeatureDataset, fit_normalization_stats, NormalizationStats,
+    )
+
+    manifest = tmp_path / "audio.csv"
+    audio_dir = tmp_path / "feat"
+    _write_manifest(manifest, [
+        _audio_row("a", split="train"),
+        _audio_row("b", split="train"),
+        _audio_row("c", split="val"),  # must not affect fit
+    ])
+    np.random.seed(0)
+    _write_audio_npy(audio_dir, "a")
+    _write_audio_npy(audio_dir, "b")
+    _write_audio_npy(audio_dir, "c")
+
+    train_ds = AudioFeatureDataset(manifest, split="train", backend="wav2vec2", audio_dir=audio_dir)
+    stats = fit_normalization_stats(train_ds, modalities=("audio",))
+
+    assert isinstance(stats, NormalizationStats)
+    assert stats.audio_mean.shape == (768,)
+    assert stats.audio_std.shape == (768,)
+    assert stats.lips_mean is None
+    assert stats.lips_std is None
+
+
+def test_fit_normalization_does_not_read_val_or_test_rows(tmp_path):
+    """Constructing a train-split dataset must skip val/test files entirely."""
+    from src.data.feature_store import AudioFeatureDataset, fit_normalization_stats
+
+    manifest = tmp_path / "audio.csv"
+    audio_dir = tmp_path / "feat"
+    _write_manifest(manifest, [
+        _audio_row("a", split="train"),
+        _audio_row("b", split="val"),
+        _audio_row("c", split="test"),
+    ])
+    _write_audio_npy(audio_dir, "a")
+    # b.npy and c.npy intentionally NOT written; if fit reads them, np.load will fail.
+
+    train_ds = AudioFeatureDataset(manifest, split="train", backend="wav2vec2", audio_dir=audio_dir)
+    stats = fit_normalization_stats(train_ds, modalities=("audio",))
+    assert stats.audio_mean is not None
+
+
+def test_dataset_applies_normalization_when_provided(tmp_path):
+    from src.data.feature_store import AudioFeatureDataset, NormalizationStats
+
+    manifest = tmp_path / "audio.csv"
+    audio_dir = tmp_path / "feat"
+    _write_manifest(manifest, [_audio_row("a", split="train")])
+    audio_dir.mkdir(parents=True, exist_ok=True)
+    np.save(audio_dir / "a.npy", np.ones((199, 768), dtype=np.float32) * 5.0)
+
+    stats = NormalizationStats(
+        audio_mean=np.full(768, 5.0, dtype=np.float32),
+        audio_std=np.full(768, 1.0, dtype=np.float32),
+        lips_mean=None, lips_std=None,
+    )
+
+    ds = AudioFeatureDataset(
+        manifest, split="train", backend="wav2vec2",
+        audio_dir=audio_dir, normalization=stats,
+    )
+    audio = ds[0]["audio"]
+    assert torch.allclose(audio, torch.zeros_like(audio), atol=1e-6)
+
+
+def test_fit_normalization_refuses_non_train_dataset(tmp_path):
+    """Calling fit on a val dataset must raise — no silent val/test leakage."""
+    from src.data.feature_store import (
+        AudioFeatureDataset, fit_normalization_stats, FeatureStoreValidationError,
+    )
+
+    manifest = tmp_path / "audio.csv"
+    audio_dir = tmp_path / "feat"
+    _write_manifest(manifest, [_audio_row("a", split="val")])
+    _write_audio_npy(audio_dir, "a")
+
+    val_ds = AudioFeatureDataset(manifest, split="val", backend="wav2vec2", audio_dir=audio_dir)
+    assert val_ds.split == "val"
+
+    with pytest.raises(FeatureStoreValidationError, match=r"train.*split|split.*train"):
+        fit_normalization_stats(val_ds, modalities=("audio",))
+
+
+def test_fit_normalization_refuses_dataset_without_split_attr(tmp_path):
+    from src.data.feature_store import fit_normalization_stats, FeatureStoreValidationError
+
+    class Bogus:
+        def __len__(self): return 0
+        def __getitem__(self, i): raise IndexError(i)
+
+    with pytest.raises(FeatureStoreValidationError, match=r"split"):
+        fit_normalization_stats(Bogus(), modalities=("audio",))
+
+
+def test_fit_normalization_lips_only(tmp_path):
+    from src.data.feature_store import (
+        VisualFeatureDataset, fit_normalization_stats,
+    )
+
+    manifest = tmp_path / "visual.csv"
+    lips_dir = tmp_path / "lips"
+    _write_manifest(manifest, [
+        _audio_row("a", split="train", source_video_id="vid_a"),
+        _audio_row("b", split="train", source_video_id="vid_b"),
+    ])
+    _write_lip_npz(lips_dir, "vid_a")
+    _write_lip_npz(lips_dir, "vid_b")
+
+    train_ds = VisualFeatureDataset(manifest, split="train", lips_dir=lips_dir)
+    stats = fit_normalization_stats(train_ds, modalities=("lips",))
+
+    assert stats.audio_mean is None
+    assert stats.audio_std is None
+    assert stats.lips_mean.shape == (84,)
+    assert stats.lips_std.shape == (84,)
