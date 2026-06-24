@@ -57,6 +57,18 @@ def _write_manifest_csv(path: Path, rows: list[tuple[str, str]]) -> None:
             w.writerow([vid, f"data/raw/{src}/{vid}.mp4", src, label, "5.0", "24.0", "120"])
 
 
+def _write_jsonl(path: Path, records: list[dict]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w") as f:
+        for rec in records:
+            f.write(json.dumps(rec) + "\n")
+
+
+def _touch_mp3(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"\x00")
+
+
 def test_iter_native_rows_real_is_bonafide_audio_and_real_video(tmp_path):
     from src.data.build_speech_manifests import iter_native_rows
 
@@ -125,3 +137,80 @@ def test_iter_native_rows_skips_videos_missing_from_split_map(tmp_path, caplog):
 
     assert [r["source_video_id"] for r in rows] == ["known"]
     assert any("orphan" in rec.message for rec in caplog.records)
+
+
+def test_parse_tts_filename_extracts_id_and_voice():
+    from src.data.build_speech_manifests import parse_tts_filename
+
+    sv, voice = parse_tts_filename("abc123__voice-XYZ.mp3")
+    assert sv == "abc123"
+    assert voice == "XYZ"
+
+
+def test_parse_tts_filename_returns_none_on_bad_name():
+    from src.data.build_speech_manifests import parse_tts_filename
+
+    assert parse_tts_filename("no_voice.mp3") is None
+    assert parse_tts_filename("abc__voice-X.wav") is None
+
+
+def test_iter_tts_records_prefers_jsonl_when_present(tmp_path):
+    from src.data.build_speech_manifests import iter_tts_records
+
+    tts_dir = tmp_path / "tts_audio"
+    _write_jsonl(tts_dir / "manifest.jsonl", [{
+        "provider": "elevenlabs",
+        "video_id": "src1",
+        "voice_id": "V1",
+        "source_folder": "real",
+        "synthetic_audio_path": "data/tts_audio/elevenlabs/real/src1__voice-V1.mp3",
+    }])
+    _write_jsonl(tts_dir / "google_tts_manifest.jsonl", [{
+        "provider": "google_tts",
+        "video_id": "src2",
+        "voice_name": "en-US-Neural2-A",
+        "source_folder": "echomimic",
+        "synthetic_audio_path": "data/tts_audio/google_tts/echomimic/src2__voice-en-US-Neural2-A.mp3",
+    }])
+
+    out = iter_tts_records(tts_dir, providers=["elevenlabs", "google_tts"])
+
+    by_provider = {r["provider"]: r for r in out}
+    assert by_provider["elevenlabs"]["source_video_id"] == "src1"
+    assert by_provider["elevenlabs"]["voice"] == "V1"
+    assert by_provider["elevenlabs"]["source_folder"] == "real"
+    assert by_provider["google_tts"]["source_video_id"] == "src2"
+    assert by_provider["google_tts"]["voice"] == "en-US-Neural2-A"
+
+
+def test_iter_tts_records_falls_back_to_filesystem_when_jsonl_missing(tmp_path):
+    from src.data.build_speech_manifests import iter_tts_records
+
+    tts_dir = tmp_path / "tts_audio"
+    _touch_mp3(tts_dir / "elevenlabs" / "real" / "src3__voice-V3.mp3")
+
+    out = iter_tts_records(tts_dir, providers=["elevenlabs"])
+
+    assert len(out) == 1
+    r = out[0]
+    assert r["provider"] == "elevenlabs"
+    assert r["source_video_id"] == "src3"
+    assert r["voice"] == "V3"
+    assert r["source_folder"] == "real"
+    assert r["synthetic_audio_path"].endswith("real/src3__voice-V3.mp3")
+
+
+def test_iter_tts_records_skips_provider_not_requested(tmp_path):
+    from src.data.build_speech_manifests import iter_tts_records
+
+    tts_dir = tmp_path / "tts_audio"
+    _write_jsonl(tts_dir / "sts_manifest.jsonl", [{
+        "provider": "elevenlabs",
+        "video_id": "sts1",
+        "voice_id": "V",
+        "source_folder": "real",
+        "synthetic_audio_path": "data/tts_audio/elevenlabs_sts/real/sts1__voice-V.mp3",
+    }])
+
+    out = iter_tts_records(tts_dir, providers=["elevenlabs", "google_tts"])
+    assert out == []

@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import csv
+import json
 import logging
+import re
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -129,3 +131,89 @@ def load_split_map(splits_dir: Path) -> dict[str, str]:
     if duplicates:
         raise ValueError(f"split leakage: {', '.join(duplicates)}")
     return mapping
+
+
+PROVIDER_DIR: dict[str, str] = {
+    "elevenlabs": "elevenlabs",
+    "google_tts": "google_tts",
+    "elevenlabs_sts": "elevenlabs_sts",
+}
+
+PROVIDER_JSONL: dict[str, str] = {
+    "elevenlabs": "manifest.jsonl",
+    "google_tts": "google_tts_manifest.jsonl",
+    "elevenlabs_sts": "sts_manifest.jsonl",
+}
+
+_FILENAME_RE = re.compile(r"^(?P<sv>.+)__voice-(?P<voice>.+)\.mp3$")
+
+
+def parse_tts_filename(name: str) -> tuple[str, str] | None:
+    """Extract (source_video_id, voice) from `{id}__voice-{voice}.mp3` or return None."""
+    m = _FILENAME_RE.match(name)
+    if not m:
+        return None
+    return m.group("sv"), m.group("voice")
+
+
+def _normalize_jsonl_record(provider: str, rec: dict) -> dict | None:
+    sv = rec.get("video_id")
+    if not sv:
+        return None
+    voice = rec.get("voice_id") or rec.get("voice_name") or ""
+    return {
+        "provider": provider,
+        "source_video_id": sv,
+        "voice": voice,
+        "synthetic_audio_path": rec.get("synthetic_audio_path", ""),
+        "source_folder": rec.get("source_folder", ""),
+    }
+
+
+def _scan_provider_dir(provider: str, provider_dir: Path) -> list[dict]:
+    found: list[dict] = []
+    if not provider_dir.exists():
+        return found
+    for mp3 in provider_dir.rglob("*.mp3"):
+        parsed = parse_tts_filename(mp3.name)
+        if parsed is None:
+            logger.warning("unparseable tts filename: %s", mp3)
+            continue
+        sv, voice = parsed
+        source_folder = mp3.parent.name if mp3.parent != provider_dir else ""
+        found.append({
+            "provider": provider,
+            "source_video_id": sv,
+            "voice": voice,
+            "synthetic_audio_path": str(mp3),
+            "source_folder": source_folder,
+        })
+    return found
+
+
+def iter_tts_records(tts_dir: Path, providers: list[str]) -> list[dict]:
+    """Return normalized TTS records for each requested provider.
+
+    JSONL is preferred per provider when present; otherwise the provider's
+    subdirectory is walked for *.mp3 files.
+    """
+    tts_dir = Path(tts_dir)
+    out: list[dict] = []
+    for provider in providers:
+        jsonl_name = PROVIDER_JSONL.get(provider)
+        jsonl_path = tts_dir / jsonl_name if jsonl_name else None
+        if jsonl_path and jsonl_path.exists():
+            with jsonl_path.open() as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    rec = json.loads(line)
+                    norm = _normalize_jsonl_record(provider, rec)
+                    if norm is not None:
+                        out.append(norm)
+            continue
+        subdir = PROVIDER_DIR.get(provider)
+        if subdir:
+            out.extend(_scan_provider_dir(provider, tts_dir / subdir))
+    return out
