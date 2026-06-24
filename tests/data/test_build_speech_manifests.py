@@ -305,3 +305,35 @@ def test_iter_generated_rows_distinct_sample_ids_per_provider_voice(tmp_path):
         "google_tts__x__voice-A",
     ]
     assert len(set(sample_ids)) == 3
+
+
+def test_write_manifest_emits_schema_columns_in_order(tmp_path):
+    from src.data.build_speech_manifests import SCHEMA, write_manifest
+
+    out = tmp_path / "derived" / "x.csv"
+    write_manifest(
+        [{"sample_id": "s1", "source_video_id": "v1", "split": "train",
+          "media_type": "video", "source_folder": "real", "provider": "original",
+          "voice_id_or_name": "",
+          "audio_path": "", "video_path": "",
+          "audio_feature_path": "", "lip_feature_path": "",
+          "audio_label": "bonafide", "audio_label_binary": 0,
+          "video_label": "real", "video_label_binary": 0,
+          "pair_label": "na", "pair_label_binary": ""}],
+        out,
+    )
+    with out.open(newline="") as f:
+        reader = csv.DictReader(f)
+        assert reader.fieldnames == list(SCHEMA)
+        rows = list(reader)
+    assert rows[0]["sample_id"] == "s1"
+    assert rows[0]["pair_label"] == "na"
+    assert rows[0]["voice_id_or_name"] == ""
+
+
+def test_write_manifest_rejects_unknown_columns(tmp_path):
+    from src.data.build_speech_manifests import write_manifest
+
+    out = tmp_path / "x.csv"
+    with pytest.raises(ValueError, match=r"unknown column"):
+        write_manifest([{"sample_id": "s", "evil_extra": "boom"}], out)

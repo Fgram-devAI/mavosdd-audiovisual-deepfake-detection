@@ -275,3 +275,19 @@ def iter_generated_rows(
             len(excluded), excluded[:5],
         )
     return rows, excluded
+
+
+def write_manifest(rows: list[dict], path: Path) -> None:
+    """Write rows to `path` with SCHEMA columns. Missing fields become empty strings."""
+    path = Path(path)
+    schema_set = set(SCHEMA)
+    for row in rows:
+        unknown = set(row) - schema_set
+        if unknown:
+            raise ValueError(f"unknown column(s) in row: {sorted(unknown)}")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=list(SCHEMA))
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({col: row.get(col, "") for col in SCHEMA})
