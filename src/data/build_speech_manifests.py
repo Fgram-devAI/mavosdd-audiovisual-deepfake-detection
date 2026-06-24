@@ -337,8 +337,11 @@ def build_audio_spoof_manifest(
 
 
 def _matched_pair_row(native: dict) -> dict:
+    # sample_id matches the native row's bare video id so the matched-pair row
+    # resolves to the same {sample_id}.npy file in data/features/audio_{backend}/
+    # as the audio_spoof_manifest row for the same video.
     return {
-        "sample_id": f"pos__{native['source_video_id']}",
+        "sample_id": native["source_video_id"],
         "source_video_id": native["source_video_id"],
         "split": native["split"],
         "media_type": "pair",
