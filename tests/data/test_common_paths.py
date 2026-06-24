@@ -25,3 +25,7 @@ def test_backend_feature_dirs_under_data_features():
     assert common.FEAT_AUDIO_WAV2VEC2_DIR == common.DATA_ROOT / "features" / "audio_wav2vec2"
     assert common.FEAT_AUDIO_WAVLM_DIR == common.DATA_ROOT / "features" / "audio_wavlm"
     assert common.FEAT_AUDIO_HUBERT_DIR == common.DATA_ROOT / "features" / "audio_hubert"
+
+
+def test_mel_feature_dir_under_data_features():
+    assert common.FEAT_AUDIO_MEL_DIR == common.DATA_ROOT / "features" / "audio_mel"

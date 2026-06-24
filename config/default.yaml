@@ -31,6 +31,13 @@ features:
   lips:
     fps: 5
     frames: 20
+  mel:
+    sample_rate: 16000
+    n_fft: 400
+    hop_length: 160
+    win_length: 400
+    n_mels: 64
+    seconds: 4.0
 
 training:
   batch_size: 32

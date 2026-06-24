@@ -18,6 +18,7 @@ data/features/lips/
 data/features/audio_wav2vec2/
 data/features/audio_wavlm/
 data/features/audio_hubert/
+data/features/audio_mel/
 data/derived/
 models/checkpoints/
 runs/
