@@ -390,4 +390,87 @@ shortcut.
 python -m src.features.extract_mel --manifest data/derived/audio_spoof_manifest_codec_matched.csv --overwrite
 ```
 
+## Voice-Disjoint Split (Anti-Leakage)
+
+Even with codec neutralized, the original splits let the *same TTS voice*
+appear in train, val, and test simultaneously — the model could memorize a
+voice and recognize it across splits. The voice-disjoint manifest confines
+each `(provider, voice_id_or_name)` to exactly one split:
+
+```bash
+python -m src.data.make_voice_disjoint_manifest
+```
+
+Writes `data/derived/audio_spoof_manifest_voice_split.csv` (2,171 rows;
+train 1,492 / val 367 / test 312; 1,000 bonafide / 1,171 spoof). Its
+`audio_path` column points at the codec-matched WAVs, so this single
+manifest neutralizes **both** confounders. Training and evaluation default
+to it.
+
+## Train The Audio Anti-Spoof Baseline
+
+Re-extract embeddings from the codec-matched WAVs into a separate store so
+the original (leaky) embeddings stay untouched:
+
+```bash
+for B in wav2vec2 wavlm hubert; do
+  python -m src.features.extract_audio_embeddings --backend $B \
+    --manifest data/derived/audio_spoof_manifest_voice_split.csv \
+    --out-dir data/features/audio_${B}_codec
+done
+```
+
+Train each backend (validation-only model selection; the test split is
+never read):
+
+```bash
+python -m src.train --backend wav2vec2 --run-name audio_wav2vec2_codec
+python -m src.train --backend wavlm    --run-name audio_wavlm_codec
+python -m src.train --backend hubert   --run-name audio_hubert_codec
+```
+
+Evaluate a checkpoint on val (test is refused unless `--allow-test`):
+
+```bash
+python -m src.evaluate --checkpoint models/checkpoints/best_audio_wav2vec2.pt --split val
+```
+
+Honest in-distribution val ROC-AUC with **codec-matched + voice-disjoint**
+inputs:
+
+| Backend  | Val ROC-AUC | Val EER  |
+|----------|-------------|----------|
+| Wav2Vec2 | 0.9508      | 0.1063   |
+| WavLM    | 1.0000      | 0.0056   |
+| HuBERT   | 1.0000      | 0.0000   |
+
+### Known Limitation — Per-TTS-Engine Spectral Fingerprinting
+
+WavLM and HuBERT saturate at val ROC-AUC = 1.0 even after both confounders
+are neutralized. Wav2Vec2 reaches 0.95. The remaining shortcut is
+**generator fingerprinting**: every TTS engine leaves vocoder/encoder
+artifacts (high-frequency residuals, silence padding, bandwidth ceilings)
+that are invariant to voice, codec, and text. Frozen SSL encoders
+pretrained on real human speech amplify these artifacts because TTS audio
+lands in a different region of the embedding manifold.
+
+In effect, the trained head is closer to a **two-class TTS-engine detector
+(ElevenLabs OR Google TTS) vs MAVOS-DD bonafide** than a generalized
+deepfake detector. Per-provider recall on the wav2vec2 val run already
+hints at this — `elevenlabs=0.85`, `google_tts=0.97`.
+
+Practical consequences:
+
+- A **new TTS engine** the model has not seen (Sesame, NotebookLM,
+  OpenAI TTS, future ElevenLabs versions) will likely evade detection
+  because it leaves a different fingerprint.
+- A 1.0 in-distribution AUC is therefore **not** evidence of a
+  generator-agnostic anti-spoof system.
+
+The honest evaluation protocol for this regime is **engine-disjoint
+evaluation** (train on one engine + bonafide, evaluate zero-shot on the
+held-out engine) or **leave-one-engine-out** across ≥3 generators, per
+the ASVspoof literature. This is recorded as a stated limitation rather
+than escalated to a new branch.
+
 See `docs/workflow.md` for the phase-based implementation guide.
