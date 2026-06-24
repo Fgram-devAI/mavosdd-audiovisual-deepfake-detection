@@ -94,7 +94,7 @@ def test_iter_native_rows_real_is_bonafide_audio_and_real_video(tmp_path):
     assert r["pair_label"] == "na"
     assert r["pair_label_binary"] == ""
     assert r["video_path"] == "data/raw/real/vid_real.mp4"
-    assert r["audio_feature_path"] == "data/features/audio/vid_real.npy"
+    assert r["audio_feature_path"] == "data/features/audio_wav2vec2/vid_real.npy"
 
 
 def test_iter_native_rows_echomimic_is_bonafide_audio_and_fake_video(tmp_path):
@@ -287,7 +287,7 @@ def test_iter_generated_rows_inherits_split_from_source(tmp_path):
     assert r["media_type"] == "audio"
     assert r["source_folder"] == "real"
     assert r["sample_id"] == "elevenlabs__src_a__voice-V1"
-    assert r["audio_feature_path"] == f"data/features/audio_generated/{r['sample_id']}.npy"
+    assert r["audio_feature_path"] == f"data/features/audio_wav2vec2/{r['sample_id']}.npy"
     assert r["lip_feature_path"] == ""
 
 

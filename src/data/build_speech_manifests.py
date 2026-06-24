@@ -72,7 +72,11 @@ def _native_audio_path(source_folder: str, video_id: str) -> str:
 
 
 def _native_audio_feature_path(video_id: str) -> str:
-    return f"data/features/audio/{video_id}.npy"
+    # Canonical wav2vec2 backend root. WavLM/HuBERT extractors write into
+    # data/features/audio_{backend}/ — the feature_store validator surfaces
+    # those as path_mismatches against this canonical column, which is the
+    # intended signal.
+    return f"data/features/audio_wav2vec2/{video_id}.npy"
 
 
 def _native_lip_feature_path(video_id: str) -> str:
@@ -243,7 +247,10 @@ def _generated_sample_id(provider: str, source_video_id: str, voice: str) -> str
 
 
 def _generated_feature_path(sample_id: str) -> str:
-    return f"data/features/audio_generated/{sample_id}.npy"
+    # Generated rows live in the same canonical wav2vec2 backend root as native
+    # rows. The legacy data/features/audio_generated/ store predates the
+    # multi-backend layout and is no longer the canonical pointer.
+    return f"data/features/audio_wav2vec2/{sample_id}.npy"
 
 
 def iter_generated_rows(
@@ -337,8 +344,11 @@ def build_audio_spoof_manifest(
 
 
 def _matched_pair_row(native: dict) -> dict:
+    # sample_id matches the native row's bare video id so the matched-pair row
+    # resolves to the same {sample_id}.npy file in data/features/audio_{backend}/
+    # as the audio_spoof_manifest row for the same video.
     return {
-        "sample_id": f"pos__{native['source_video_id']}",
+        "sample_id": native["source_video_id"],
         "source_video_id": native["source_video_id"],
         "split": native["split"],
         "media_type": "pair",
