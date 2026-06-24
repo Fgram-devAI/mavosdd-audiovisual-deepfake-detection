@@ -491,3 +491,38 @@ def test_build_visual_speech_manifest_excludes_generated_without_native_source(t
     with out.open(newline="") as f:
         rows = list(csv.DictReader(f))
     assert all(r["source_video_id"] != "stranger" for r in rows)
+
+
+def test_build_fusion_speech_manifest_has_bonafide_and_spoof_rows(tmp_path):
+    from src.data.build_speech_manifests import build_fusion_speech_manifest
+
+    p = _fixture_tree(tmp_path)
+    out = tmp_path / "derived" / "fusion_speech_manifest.csv"
+
+    stats = build_fusion_speech_manifest(
+        manifest_path=p["manifest"],
+        splits_dir=p["splits"],
+        tts_dir=p["tts"],
+        out_path=out,
+        providers=["elevenlabs", "google_tts"],
+    )
+    assert stats["bonafide_rows"] == 2
+    assert stats["spoof_rows"] == 2
+
+    with out.open(newline="") as f:
+        rows = list(csv.DictReader(f))
+
+    counts_audio = {}
+    counts_pair = {}
+    for r in rows:
+        counts_audio.setdefault(r["audio_label"], 0)
+        counts_audio[r["audio_label"]] += 1
+        counts_pair.setdefault(r["pair_label"], 0)
+        counts_pair[r["pair_label"]] += 1
+    assert counts_audio == {"bonafide": 2, "spoof": 2}
+    assert counts_pair == {"matched_bonafide": 2, "generated_same_transcript": 2}
+
+    # Every row carries both a lip and an audio feature path.
+    for r in rows:
+        assert r["lip_feature_path"]
+        assert r["audio_feature_path"]

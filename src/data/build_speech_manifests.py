@@ -399,3 +399,34 @@ def build_visual_speech_manifest(
         "generated_rows": len(pair_rows),
         "excluded_no_native_source": excluded_no_native,
     }
+
+
+def build_fusion_speech_manifest(
+    manifest_path: Path,
+    splits_dir: Path,
+    tts_dir: Path,
+    out_path: Path,
+    providers: list[str],
+) -> dict:
+    split_map = load_split_map(splits_dir)
+    native = iter_native_rows(manifest_path, split_map)
+    native_by_id = {r["source_video_id"]: r for r in native}
+    tts_records = iter_tts_records(tts_dir, providers)
+    generated, _ = iter_generated_rows(
+        tts_records, split_map, _native_source_folder_map(native)
+    )
+
+    bonafide_rows = [_matched_pair_row(n) for n in native]
+
+    spoof_rows: list[dict] = []
+    for g in generated:
+        n = native_by_id.get(g["source_video_id"])
+        if n is None:
+            continue
+        spoof_rows.append(_generated_pair_row(g, n))
+
+    write_manifest(bonafide_rows + spoof_rows, out_path)
+    return {
+        "bonafide_rows": len(bonafide_rows),
+        "spoof_rows": len(spoof_rows),
+    }
