@@ -11,6 +11,7 @@ data/manifest.csv
 data/quarantine_log.csv
 data/splits/*.csv
 data/audio_wav/
+data/audio_wav_codec_matched/
 data/transcripts/
 data/tts_audio/
 data/features/audio/

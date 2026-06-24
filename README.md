@@ -335,4 +335,59 @@ Outputs are written locally under:
 data/tts_audio/google_tts/real/
 ```
 
+## Match Audio Codec Footprint (Anti-Leakage)
+
+Bonafide rows on disk are clean 16 kHz PCM WAVs; every generated spoof row is a
+lossy MP3 (ElevenLabs at 44.1 kHz / 128 kbps, Google TTS at 24 kHz / 64 kbps).
+That 100% format/label correlation lets any mel-input model shortcut to a
+WAV-vs-MP3 codec discriminator and ignore the actual TTS artifacts. The
+codec-match step round-trips each bonafide WAV through MP3 — at a codec spec
+sampled deterministically per row from the spoof provider distribution — and
+decodes every row back to a 16 kHz mono WAV, so codec history becomes
+label-independent.
+
+Requires `ffmpeg` and `libmp3lame` on PATH (`brew install ffmpeg` on macOS).
+
+```bash
+python -m src.data.codec_match_audio
+```
+
+Defaults read `data/derived/audio_spoof_manifest.csv` and write:
+
+```text
+data/audio_wav_codec_matched/{sample_id}.wav
+data/derived/audio_spoof_manifest_codec_matched.csv
+```
+
+The new manifest has the same SCHEMA as the input with `audio_path` repointed
+at the new tree. Both paths are gitignored.
+
+### Re-extract Audio Embeddings From The Codec-Matched WAVs
+
+After codec-match the existing `data/features/audio_{wav2vec2,wavlm,hubert}/`
+stores are stale — they were extracted from the leaky originals. Re-run each
+backend against the codec-matched manifest with `--overwrite`:
+
+```bash
+python -m src.features.extract_audio_embeddings --backend wav2vec2 --manifest data/derived/audio_spoof_manifest_codec_matched.csv --overwrite
+python -m src.features.extract_audio_embeddings --backend wavlm    --manifest data/derived/audio_spoof_manifest_codec_matched.csv --overwrite
+python -m src.features.extract_audio_embeddings --backend hubert   --manifest data/derived/audio_spoof_manifest_codec_matched.csv --overwrite
+```
+
+Each backend writes 2171 `.npy` files into its backend-specific default
+directory; pass `--device cuda` or `--device mps` if a GPU is available.
+
+### Re-extract Mel-Spectrograms From The Codec-Matched WAVs
+
+The mel-CNN baseline in `notebooks/01_mel_cnn_baseline.ipynb` is the most
+codec-sensitive head in the project — its near-perfect val ROC-AUC on the
+original features was the trigger for this whole step. Re-extract mel into
+the same `data/features/audio_mel/` directory and re-run the notebook end to
+end as a diagnostic; a large AUC drop confirms the fix neutralized the
+shortcut.
+
+```bash
+python -m src.features.extract_mel --manifest data/derived/audio_spoof_manifest_codec_matched.csv --overwrite
+```
+
 See `docs/workflow.md` for the phase-based implementation guide.
