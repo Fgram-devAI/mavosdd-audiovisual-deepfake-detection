@@ -642,3 +642,71 @@ def test_validate_manifests_detects_echomimic_audio_relabeled_spoof(tmp_path, mo
     monkeypatch.setenv("SPEECH_MANIFEST_SKIP_PATH_EXISTS", "1")
     issues = validate_manifests(out_dir, p["manifest"], p["splits"])
     assert any("echomimic" in s.lower() and "spoof" in s.lower() for s in issues)
+
+
+def test_cli_default_builds_three_manifests(tmp_path):
+    from src.data.build_speech_manifests import cli
+
+    p = _fixture_tree(tmp_path)
+    out_dir = tmp_path / "derived"
+    rc = cli([
+        "--manifest", str(p["manifest"]),
+        "--splits-dir", str(p["splits"]),
+        "--tts-dir", str(p["tts"]),
+        "--out-dir", str(out_dir),
+    ])
+    assert rc == 0
+    for name in ("audio_spoof_manifest.csv", "visual_speech_manifest.csv",
+                 "fusion_speech_manifest.csv"):
+        assert (out_dir / name).exists()
+
+
+def test_cli_include_sts_appends_sts_provider(tmp_path):
+    from src.data.build_speech_manifests import cli
+
+    p = _fixture_tree(tmp_path)
+    # Add an STS record for src_a (already in train split).
+    _write_jsonl(p["tts"] / "sts_manifest.jsonl", [{
+        "provider": "elevenlabs", "video_id": "src_a", "voice_id": "Vsts",
+        "source_folder": "real",
+        "synthetic_audio_path": "data/tts_audio/elevenlabs_sts/real/src_a__voice-Vsts.mp3",
+    }])
+    out_dir = tmp_path / "derived"
+
+    # Without --include-sts the STS row is not in the manifest.
+    cli(["--manifest", str(p["manifest"]), "--splits-dir", str(p["splits"]),
+         "--tts-dir", str(p["tts"]), "--out-dir", str(out_dir)])
+    with (out_dir / "audio_spoof_manifest.csv").open(newline="") as f:
+        rows = list(csv.DictReader(f))
+    assert all(r["provider"] != "elevenlabs_sts" for r in rows)
+
+    # With --include-sts the STS row appears.
+    cli(["--manifest", str(p["manifest"]), "--splits-dir", str(p["splits"]),
+         "--tts-dir", str(p["tts"]), "--out-dir", str(out_dir), "--include-sts"])
+    with (out_dir / "audio_spoof_manifest.csv").open(newline="") as f:
+        rows = list(csv.DictReader(f))
+    assert any(r["provider"] == "elevenlabs_sts" for r in rows)
+
+
+def test_cli_validate_returns_zero_on_clean_run(tmp_path, monkeypatch):
+    from src.data.build_speech_manifests import cli
+
+    p = _fixture_tree(tmp_path)
+    out_dir = tmp_path / "derived"
+    cli(["--manifest", str(p["manifest"]), "--splits-dir", str(p["splits"]),
+         "--tts-dir", str(p["tts"]), "--out-dir", str(out_dir)])
+    monkeypatch.setenv("SPEECH_MANIFEST_SKIP_PATH_EXISTS", "1")
+    rc = cli(["--manifest", str(p["manifest"]), "--splits-dir", str(p["splits"]),
+              "--out-dir", str(out_dir), "--validate"])
+    assert rc == 0
+
+
+def test_cli_validate_returns_one_on_issues(tmp_path, monkeypatch):
+    from src.data.build_speech_manifests import cli
+
+    monkeypatch.setenv("SPEECH_MANIFEST_SKIP_PATH_EXISTS", "1")
+    # Run --validate against a non-existent out-dir.
+    rc = cli(["--manifest", str(tmp_path / "does_not_exist.csv"),
+              "--splits-dir", str(tmp_path / "no_splits"),
+              "--out-dir", str(tmp_path / "no_out"), "--validate"])
+    assert rc == 1

@@ -1,12 +1,18 @@
 """Build derived speech-detection manifests from raw + generated assets."""
 from __future__ import annotations
 
+import argparse
 import csv
 import json
 import logging
 import os
 import re
+import sys
 from pathlib import Path
+
+from src.common import (
+    DERIVED_DIR, MANIFEST, SPLITS_DIR, TTS_AUDIO_DIR,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -580,3 +586,69 @@ def validate_manifests(
                         issues.append(f"{name}: missing {col} for {sid}: {p}")
 
     return issues
+
+
+def _default_providers(include_sts: bool) -> list[str]:
+    providers = ["elevenlabs", "google_tts"]
+    if include_sts:
+        providers.append("elevenlabs_sts")
+    return providers
+
+
+def cli(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        description="Build derived speech-detection manifests (audio / visual / fusion).",
+    )
+    parser.add_argument("--manifest", default=str(MANIFEST))
+    parser.add_argument("--splits-dir", default=str(SPLITS_DIR))
+    parser.add_argument("--tts-dir", default=str(TTS_AUDIO_DIR))
+    parser.add_argument("--out-dir", default=str(DERIVED_DIR))
+    parser.add_argument("--include-sts", action="store_true",
+                        help="Include ElevenLabs speech-to-speech (off by default).")
+    parser.add_argument("--validate", action="store_true",
+                        help="Validate existing derived manifests; no writes.")
+    args = parser.parse_args(argv)
+
+    manifest_path = Path(args.manifest)
+    splits_dir = Path(args.splits_dir)
+    tts_dir = Path(args.tts_dir)
+    out_dir = Path(args.out_dir)
+
+    if args.validate:
+        issues = validate_manifests(out_dir, manifest_path, splits_dir)
+        if not issues:
+            print("SPEECH MANIFEST VALIDATION OK")
+            return 0
+        for s in issues:
+            print(s)
+        return 1
+
+    providers = _default_providers(args.include_sts)
+    audio = build_audio_spoof_manifest(
+        manifest_path, splits_dir, tts_dir,
+        out_dir / "audio_spoof_manifest.csv", providers,
+    )
+    visual = build_visual_speech_manifest(
+        manifest_path, splits_dir, tts_dir,
+        out_dir / "visual_speech_manifest.csv", providers,
+    )
+    fusion = build_fusion_speech_manifest(
+        manifest_path, splits_dir, tts_dir,
+        out_dir / "fusion_speech_manifest.csv", providers,
+    )
+    print(
+        f"audio_spoof: native={audio['native_rows']} generated={audio['generated_rows']} "
+        f"excluded={len(audio['excluded'])}"
+    )
+    print(
+        f"visual_speech: matched={visual['matched_rows']} generated={visual['generated_rows']} "
+        f"excluded_no_native_source={len(visual['excluded_no_native_source'])}"
+    )
+    print(
+        f"fusion_speech: bonafide={fusion['bonafide_rows']} spoof={fusion['spoof_rows']}"
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(cli())
