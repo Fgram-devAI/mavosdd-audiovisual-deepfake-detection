@@ -174,6 +174,8 @@ def test_extract_logs_and_skips_missing_audio_path(tmp_path, capsys):
 
     assert counts == {"written": 0, "skipped": 0, "failed": 1}
     assert not (out_dir / "ghost.npy").exists()
+    captured = capsys.readouterr()
+    assert "[FAIL] ghost:" in (captured.err + captured.out)
 
 
 def test_extract_logs_and_skips_when_sample_id_column_missing(tmp_path):

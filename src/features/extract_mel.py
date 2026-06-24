@@ -120,7 +120,7 @@ def extract(
 def _load_mel_config() -> dict:
     """Load the `mel:` block from config/default.yaml as a plain dict."""
     import yaml
-    cfg_path = Path("config/default.yaml")
+    cfg_path = Path(__file__).resolve().parent.parent.parent / "config" / "default.yaml"
     with cfg_path.open() as f:
         cfg = yaml.safe_load(f)
     return cfg["features"]["mel"]
