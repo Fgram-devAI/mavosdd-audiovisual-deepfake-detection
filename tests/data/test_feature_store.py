@@ -295,3 +295,64 @@ def test_visual_dataset_rejects_mask_not_1d(tmp_path):
     ds = VisualFeatureDataset(manifest, split="train", lips_dir=lips_dir)
     with pytest.raises(FeatureStoreValidationError, match=r"mask.*1-D|mask.*rank"):
         _ = ds[0]
+
+
+# ---------- Task 4: FusionFeatureDataset ----------
+
+def test_fusion_dataset_returns_audio_and_lips_for_same_row(tmp_path):
+    from src.data.feature_store import FusionFeatureDataset
+
+    manifest = tmp_path / "fusion.csv"
+    audio_dir = tmp_path / "audio_feat"
+    lips_dir = tmp_path / "lips"
+    _write_manifest(manifest, [
+        _audio_row("a", split="train", pair_label_binary="0", source_video_id="vid_a"),
+        _audio_row("b", split="val",   pair_label_binary="1", source_video_id="vid_b"),
+    ])
+    for sid in ("a", "b"):
+        _write_audio_npy(audio_dir, sid)
+    for vid in ("vid_a", "vid_b"):
+        _write_lip_npz(lips_dir, vid)
+
+    ds = FusionFeatureDataset(
+        manifest, split="train", backend="wav2vec2",
+        audio_dir=audio_dir, lips_dir=lips_dir,
+    )
+
+    assert len(ds) == 1
+    item = ds[0]
+    assert item["sample_id"] == "a"
+    assert item["source_video_id"] == "vid_a"
+    assert item["audio"].shape == (199, 768)
+    assert item["lips"].shape == (20, 84)
+    assert item["lips_mask"].shape == (20,)
+    assert int(item["label"].item()) == 0
+
+
+def test_fusion_dataset_backend_selection_resolves_default_audio_root(tmp_path, monkeypatch):
+    """All three audio backends route to their own root when audio_dir is omitted."""
+    from src import common
+    import src.data.feature_store as fs
+    from src.data.feature_store import FusionFeatureDataset
+
+    manifest = tmp_path / "fusion.csv"
+    lips_dir = tmp_path / "lips"
+    _write_manifest(manifest, [_audio_row("a", split="train", source_video_id="vid_a")])
+    _write_lip_npz(lips_dir, "vid_a")
+
+    roots = {
+        "wav2vec2": tmp_path / "w2v",
+        "wavlm":    tmp_path / "wlm",
+        "hubert":   tmp_path / "hub",
+    }
+    for backend, root in roots.items():
+        _write_audio_npy(root, "a")
+
+    monkeypatch.setattr(common, "FEAT_AUDIO_WAV2VEC2_DIR", roots["wav2vec2"], raising=True)
+    monkeypatch.setattr(common, "FEAT_AUDIO_WAVLM_DIR",    roots["wavlm"],    raising=True)
+    monkeypatch.setattr(common, "FEAT_AUDIO_HUBERT_DIR",   roots["hubert"],   raising=True)
+    monkeypatch.setattr(fs, "AUDIO_BACKEND_DIRS", dict(roots))
+
+    for backend in ("wav2vec2", "wavlm", "hubert"):
+        ds = FusionFeatureDataset(manifest, split="train", backend=backend, lips_dir=lips_dir)
+        assert ds[0]["audio"].shape == (199, 768)

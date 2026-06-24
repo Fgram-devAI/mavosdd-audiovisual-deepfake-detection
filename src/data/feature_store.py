@@ -199,3 +199,38 @@ class VisualFeatureDataset(Dataset):
         }
         item.update(_row_metadata(row))
         return item
+
+
+class FusionFeatureDataset(Dataset):
+    """Late-fusion dataset returning audio embeddings + lip features for one row."""
+
+    def __init__(
+        self,
+        manifest_path: str | Path,
+        *,
+        split: str,
+        backend: str,
+        audio_dir: Path | None = None,
+        lips_dir: Path | None = None,
+    ) -> None:
+        self._rows = _filter_split(_read_manifest_rows(manifest_path), split)
+        self._audio_dir = Path(audio_dir) if audio_dir is not None else resolve_audio_backend_dir(backend)
+        self._lips_dir = Path(lips_dir) if lips_dir is not None else common.FEAT_LIPS_DIR
+        self.backend = backend
+        self.split = split
+
+    def __len__(self) -> int:
+        return len(self._rows)
+
+    def __getitem__(self, idx: int) -> dict:
+        row = self._rows[idx]
+        audio_arr = _load_audio_array(self._audio_dir / f"{row['sample_id']}.npy")
+        feats, mask = _load_lip_array(self._lips_dir / f"{row['source_video_id']}.npz")
+        item = {
+            "audio": torch.from_numpy(audio_arr),
+            "lips": torch.from_numpy(feats),
+            "lips_mask": torch.from_numpy(mask),
+            "label": _label_long(row, "pair_label_binary"),
+        }
+        item.update(_row_metadata(row))
+        return item
