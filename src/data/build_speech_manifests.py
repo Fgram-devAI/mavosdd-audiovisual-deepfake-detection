@@ -217,3 +217,61 @@ def iter_tts_records(tts_dir: Path, providers: list[str]) -> list[dict]:
         if subdir:
             out.extend(_scan_provider_dir(provider, tts_dir / subdir))
     return out
+
+
+def _generated_sample_id(provider: str, source_video_id: str, voice: str) -> str:
+    return f"{provider}__{source_video_id}__voice-{voice}"
+
+
+def _generated_feature_path(sample_id: str) -> str:
+    return f"data/features/audio_generated/{sample_id}.npy"
+
+
+def iter_generated_rows(
+    tts_records: list[dict],
+    split_map: dict[str, str],
+    source_folder_map: dict[str, str] | None = None,
+) -> tuple[list[dict], list[str]]:
+    """Build spoof rows. Returns (rows, excluded_source_video_ids).
+
+    Generated rows inherit split from their source_video_id. Records whose
+    source_video_id is missing from split_map are excluded with a warning.
+    """
+    rows: list[dict] = []
+    excluded: list[str] = []
+    folder_map = source_folder_map or {}
+    for rec in tts_records:
+        sv = rec["source_video_id"]
+        split = split_map.get(sv)
+        if split is None:
+            excluded.append(sv)
+            continue
+        provider = rec["provider"]
+        voice = rec.get("voice", "")
+        sample_id = _generated_sample_id(provider, sv, voice)
+        source_folder = rec.get("source_folder") or folder_map.get(sv, "")
+        rows.append({
+            "sample_id": sample_id,
+            "source_video_id": sv,
+            "split": split,
+            "media_type": "audio",
+            "source_folder": source_folder,
+            "provider": provider,
+            "voice_id_or_name": voice,
+            "audio_path": rec.get("synthetic_audio_path", ""),
+            "video_path": "",
+            "audio_feature_path": _generated_feature_path(sample_id),
+            "lip_feature_path": "",
+            "audio_label": "spoof",
+            "audio_label_binary": AUDIO_LABEL_BINARY_BY_STRING["spoof"],
+            "video_label": "na",
+            "video_label_binary": VIDEO_LABEL_BINARY_BY_STRING["na"],
+            "pair_label": "na",
+            "pair_label_binary": "",
+        })
+    if excluded:
+        logger.warning(
+            "iter_generated_rows: %d records excluded (unknown source_video_id): %s",
+            len(excluded), excluded[:5],
+        )
+    return rows, excluded

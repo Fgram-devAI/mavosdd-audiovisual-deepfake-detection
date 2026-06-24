@@ -214,3 +214,94 @@ def test_iter_tts_records_skips_provider_not_requested(tmp_path):
 
     out = iter_tts_records(tts_dir, providers=["elevenlabs", "google_tts"])
     assert out == []
+
+
+def test_iter_generated_rows_inherits_split_from_source(tmp_path):
+    from src.data.build_speech_manifests import iter_generated_rows
+
+    tts = [{
+        "provider": "elevenlabs",
+        "source_video_id": "src_a",
+        "voice": "V1",
+        "synthetic_audio_path": "data/tts_audio/elevenlabs/real/src_a__voice-V1.mp3",
+        "source_folder": "real",
+    }]
+    split_map = {"src_a": "train"}
+
+    rows, excluded = iter_generated_rows(tts, split_map)
+
+    assert excluded == []
+    assert len(rows) == 1
+    r = rows[0]
+    assert r["split"] == "train"
+    assert r["source_video_id"] == "src_a"
+    assert r["provider"] == "elevenlabs"
+    assert r["voice_id_or_name"] == "V1"
+    assert r["audio_label"] == "spoof"
+    assert r["audio_label_binary"] == 1
+    assert r["video_label"] == "na"
+    assert r["video_label_binary"] == ""
+    assert r["media_type"] == "audio"
+    assert r["source_folder"] == "real"
+    assert r["sample_id"] == "elevenlabs__src_a__voice-V1"
+    assert r["audio_feature_path"] == f"data/features/audio_generated/{r['sample_id']}.npy"
+    assert r["lip_feature_path"] == ""
+
+
+def test_iter_generated_rows_excludes_unknown_source_and_logs(tmp_path, caplog):
+    from src.data.build_speech_manifests import iter_generated_rows
+
+    tts = [{
+        "provider": "elevenlabs",
+        "source_video_id": "ghost",
+        "voice": "V",
+        "synthetic_audio_path": "data/tts_audio/elevenlabs/real/ghost__voice-V.mp3",
+        "source_folder": "real",
+    }]
+    split_map = {"known": "train"}
+
+    with caplog.at_level(logging.WARNING):
+        rows, excluded = iter_generated_rows(tts, split_map)
+
+    assert rows == []
+    assert excluded == ["ghost"]
+    assert any("ghost" in rec.message for rec in caplog.records)
+
+
+def test_iter_generated_rows_fills_source_folder_from_native_map_when_missing(tmp_path):
+    from src.data.build_speech_manifests import iter_generated_rows
+
+    tts = [{
+        "provider": "google_tts",
+        "source_video_id": "src_b",
+        "voice": "en-US-Neural2-A",
+        "synthetic_audio_path": "data/tts_audio/google_tts/src_b__voice-en-US-Neural2-A.mp3",
+        "source_folder": "",
+    }]
+    rows, _ = iter_generated_rows(
+        tts,
+        split_map={"src_b": "val"},
+        source_folder_map={"src_b": "memo"},
+    )
+    assert rows[0]["source_folder"] == "memo"
+
+
+def test_iter_generated_rows_distinct_sample_ids_per_provider_voice(tmp_path):
+    from src.data.build_speech_manifests import iter_generated_rows
+
+    tts = [
+        {"provider": "elevenlabs", "source_video_id": "x", "voice": "A",
+         "synthetic_audio_path": "p1.mp3", "source_folder": "real"},
+        {"provider": "elevenlabs", "source_video_id": "x", "voice": "B",
+         "synthetic_audio_path": "p2.mp3", "source_folder": "real"},
+        {"provider": "google_tts", "source_video_id": "x", "voice": "A",
+         "synthetic_audio_path": "p3.mp3", "source_folder": "real"},
+    ]
+    rows, _ = iter_generated_rows(tts, {"x": "train"})
+    sample_ids = [r["sample_id"] for r in rows]
+    assert sample_ids == [
+        "elevenlabs__x__voice-A",
+        "elevenlabs__x__voice-B",
+        "google_tts__x__voice-A",
+    ]
+    assert len(set(sample_ids)) == 3
