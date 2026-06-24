@@ -1,10 +1,99 @@
 """Tests for src/evaluate.py metric functions, evaluate_checkpoint, and CLI."""
 from __future__ import annotations
 
+import csv
+from pathlib import Path
+
 import numpy as np
 import pytest
+import torch
 
 from src import evaluate
+from src.models.late_fusion import LateFusionClassifier
+
+
+# ---------- shared synthetic manifest + .npy fixture helpers ----------
+
+_AUDIO_CSV_FIELDS = [
+    "sample_id", "source_video_id", "split", "media_type", "source_folder",
+    "provider", "voice_id_or_name", "audio_path", "video_path",
+    "audio_feature_path", "lip_feature_path",
+    "audio_label", "audio_label_binary",
+    "video_label", "video_label_binary",
+    "pair_label", "pair_label_binary",
+]
+
+
+def _row(sample_id: str, *, split: str, provider: str, label: int) -> dict:
+    blank = {k: "" for k in _AUDIO_CSV_FIELDS}
+    blank.update({
+        "sample_id": sample_id,
+        "source_video_id": sample_id,
+        "split": split,
+        "media_type": "audio",
+        "source_folder": "real" if label == 0 else "tts",
+        "provider": provider,
+        "audio_path": f"data/audio_wav/{sample_id}.wav",
+        "video_path": f"data/raw/{sample_id}.mp4",
+        "audio_label": "bonafide" if label == 0 else "spoof",
+        "audio_label_binary": str(label),
+        "video_label": "real",
+        "video_label_binary": "0",
+        "pair_label": "matched_bonafide",
+        "pair_label_binary": str(label),
+    })
+    return blank
+
+
+def _write_manifest(path: Path, rows: list[dict]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=_AUDIO_CSV_FIELDS)
+        w.writeheader()
+        for r in rows:
+            w.writerow(r)
+
+
+def _write_npy(dir_path: Path, sample_id: str, t: int = 16, dim: int = 768) -> None:
+    dir_path.mkdir(parents=True, exist_ok=True)
+    arr = np.random.RandomState(abs(hash(sample_id)) % (2**32)).randn(t, dim).astype(np.float32)
+    np.save(dir_path / f"{sample_id}.npy", arr)
+
+
+def _build_eval_fixture(tmp_path: Path, n_per_split: int = 4) -> tuple[Path, Path, Path]:
+    """Return (manifest, audio_dir, ckpt_path) with val + test splits populated."""
+    manifest = tmp_path / "manifest.csv"
+    audio_dir = tmp_path / "feat_codec"
+    ckpt_path = tmp_path / "ckpt.pt"
+
+    rows = []
+    for i in range(n_per_split):
+        for split in ("val", "test"):
+            sid = f"{split}_{i}"
+            provider = "elevenlabs" if i % 2 == 0 else "google_tts"
+            label = i % 2
+            rows.append(_row(sid, split=split, provider=provider, label=label))
+            _write_npy(audio_dir, sid)
+    _write_manifest(manifest, rows)
+
+    model = LateFusionClassifier("audio", emb=128, p=0.3)
+    ckpt = {
+        "state_dict": model.state_dict(),
+        "modality": "audio",
+        "backend": "wav2vec2",
+        "audio_dir": str(audio_dir),
+        "model_hparams": {"modality": "audio", "emb": 128, "dropout": 0.3},
+        "norm_stats": {
+            "audio_mean": np.zeros(768, dtype=np.float32),
+            "audio_std": np.ones(768, dtype=np.float32),
+            "eps": 1e-6,
+        },
+        "val_metrics": {},
+        "seed": 42,
+        "manifest": str(manifest),
+    }
+    torch.save(ckpt, ckpt_path)
+    return manifest, audio_dir, ckpt_path
 
 
 class TestRocAuc:
@@ -83,3 +172,43 @@ class TestMetricBattery:
         assert "confusion" in out
         assert "per_provider_recall" in out
         assert "n" in out and out["n"] == 6
+
+
+# ---------- Task 4: evaluate_checkpoint + test gate + CLI ----------
+
+class TestEvaluateCheckpointGate:
+    def test_evaluate_refuses_test_without_flag(self, tmp_path):
+        _, _, ckpt = _build_eval_fixture(tmp_path)
+        with pytest.raises(SystemExit):
+            evaluate.evaluate_checkpoint(ckpt, split="test")
+
+    def test_evaluate_allows_test_with_flag(self, tmp_path):
+        _, _, ckpt = _build_eval_fixture(tmp_path)
+        out = evaluate.evaluate_checkpoint(ckpt, split="test", allow_test=True, device="cpu")
+        assert "roc_auc" in out
+        assert "n" in out and out["n"] > 0
+
+    def test_evaluate_val_works_without_flag(self, tmp_path):
+        _, _, ckpt = _build_eval_fixture(tmp_path)
+        out = evaluate.evaluate_checkpoint(ckpt, split="val", device="cpu")
+        assert "roc_auc" in out
+
+
+class TestEvaluateCLI:
+    def test_cli_test_split_without_flag_exits_nonzero(self, tmp_path):
+        _, _, ckpt = _build_eval_fixture(tmp_path)
+        rc = evaluate.main([
+            "--checkpoint", str(ckpt),
+            "--split", "test",
+            "--device", "cpu",
+        ])
+        assert rc != 0
+
+    def test_cli_val_split_returns_zero(self, tmp_path):
+        _, _, ckpt = _build_eval_fixture(tmp_path)
+        rc = evaluate.main([
+            "--checkpoint", str(ckpt),
+            "--split", "val",
+            "--device", "cpu",
+        ])
+        assert rc == 0

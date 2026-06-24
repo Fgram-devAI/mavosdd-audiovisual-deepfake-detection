@@ -1,7 +1,12 @@
 """Evaluation: metric functions, checkpoint evaluator, and CLI."""
 from __future__ import annotations
 
+import argparse
+import sys
+from pathlib import Path
+
 import numpy as np
+import torch
 from sklearn.metrics import (
     confusion_matrix,
     f1_score,
@@ -10,6 +15,13 @@ from sklearn.metrics import (
     roc_auc_score,
     roc_curve,
 )
+
+from src.data.feature_store import (
+    AudioFeatureDataset,
+    NormalizationStats,
+    make_dataloader,
+)
+from src.models.late_fusion import LateFusionClassifier
 
 
 def roc_auc(y_true: np.ndarray, score: np.ndarray) -> float:
@@ -77,9 +89,115 @@ def metric_battery(
     }
 
 
-def main() -> None:
-    raise NotImplementedError("CLI lands in Task 4")
+def _resolve_device(name: str) -> torch.device:
+    if name == "auto":
+        if torch.cuda.is_available():
+            return torch.device("cuda")
+        if torch.backends.mps.is_available():
+            return torch.device("mps")
+        return torch.device("cpu")
+    return torch.device(name)
+
+
+def evaluate_checkpoint(
+    ckpt_path: str | Path,
+    *,
+    split: str,
+    allow_test: bool = False,
+    device: str = "auto",
+    manifest: str | Path | None = None,
+    batch_size: int = 32,
+) -> dict:
+    if split == "test" and not allow_test:
+        raise SystemExit(
+            "Refusing to evaluate on test split without --allow-test. "
+            "Use --split val for model selection."
+        )
+
+    ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+    dev = _resolve_device(device)
+
+    hp = ckpt["model_hparams"]
+    model = LateFusionClassifier(
+        modality=hp["modality"], emb=hp.get("emb", 128), p=hp.get("dropout", 0.3)
+    )
+    model.load_state_dict(ckpt["state_dict"])
+    model.to(dev).eval()
+
+    ns = ckpt["norm_stats"]
+    stats = NormalizationStats(
+        audio_mean=np.asarray(ns["audio_mean"], dtype=np.float32),
+        audio_std=np.asarray(ns["audio_std"], dtype=np.float32),
+        lips_mean=None,
+        lips_std=None,
+        eps=ns.get("eps", 1e-6),
+    )
+
+    ds = AudioFeatureDataset(
+        manifest_path=str(manifest) if manifest is not None else ckpt["manifest"],
+        split=split,
+        backend=ckpt["backend"],
+        audio_dir=Path(ckpt["audio_dir"]),
+        normalization=stats,
+    )
+    loader = make_dataloader(ds, batch_size=batch_size, shuffle=False)
+
+    ys: list[int] = []
+    scores: list[float] = []
+    providers: list[str] = []
+    with torch.no_grad():
+        for batch in loader:
+            audio = batch["audio"].to(dev)
+            logits = model(audio)
+            probs = torch.sigmoid(logits).cpu().numpy().tolist()
+            scores.extend(probs)
+            ys.extend(batch["label"].cpu().numpy().astype(int).tolist())
+            providers.extend(m.get("provider", "") for m in batch["metadata"])
+
+    return metric_battery(
+        np.asarray(ys, dtype=int),
+        np.asarray(scores, dtype=float),
+        np.asarray(providers, dtype=object),
+    )
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(description="Evaluate an audio anti-spoof checkpoint.")
+    p.add_argument("--checkpoint", required=True, type=Path)
+    p.add_argument("--split", required=True, choices=("train", "val", "test"))
+    p.add_argument("--allow-test", action="store_true",
+                   help="Required to evaluate on the test split.")
+    p.add_argument("--device", default="auto", choices=("auto", "cuda", "mps", "cpu"))
+    p.add_argument("--manifest", default=None, type=Path,
+                   help="Override manifest path (default: ckpt['manifest']).")
+    p.add_argument("--batch-size", type=int, default=32)
+    return p
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _build_parser().parse_args(argv)
+    try:
+        result = evaluate_checkpoint(
+            args.checkpoint,
+            split=args.split,
+            allow_test=args.allow_test,
+            device=args.device,
+            manifest=args.manifest,
+            batch_size=args.batch_size,
+        )
+    except SystemExit as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    print(
+        f"split={args.split} n={result['n']} "
+        f"roc_auc={result['roc_auc']:.4f} eer={result['eer']:.4f} "
+        f"f1={result['f1']:.4f} prec={result['precision']:.4f} rec={result['recall']:.4f}"
+    )
+    print(f"confusion={result['confusion']}")
+    if result["per_provider_recall"]:
+        print(f"per_provider_recall={result['per_provider_recall']}")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
