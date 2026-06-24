@@ -64,8 +64,52 @@ class Wav2Vec2Backend(AudioEmbeddingBackend):
         return hidden.cpu().numpy()
 
 
+class WavLMBackend(AudioEmbeddingBackend):
+    name = "wavlm"
+    model_id = "microsoft/wavlm-base-plus"
+    sample_rate = 16000
+    output_dim = 768
+
+    def load(self, device: torch.device) -> None:
+        self._device = device
+        self._processor = AutoFeatureExtractor.from_pretrained(self.model_id)
+        self._model = WavLMModel.from_pretrained(self.model_id).to(device).eval()
+        for param in self._model.parameters():
+            param.requires_grad_(False)
+
+    @torch.no_grad()
+    def encode(self, wave: np.ndarray) -> np.ndarray:
+        inputs = self._processor(wave, sampling_rate=self.sample_rate, return_tensors="pt")
+        input_values = inputs.input_values.to(self._device)
+        hidden = self._model(input_values).last_hidden_state.squeeze(0)
+        return hidden.cpu().numpy()
+
+
+class HubertBackend(AudioEmbeddingBackend):
+    name = "hubert"
+    model_id = "facebook/hubert-base-ls960"
+    sample_rate = 16000
+    output_dim = 768
+
+    def load(self, device: torch.device) -> None:
+        self._device = device
+        self._processor = AutoFeatureExtractor.from_pretrained(self.model_id)
+        self._model = HubertModel.from_pretrained(self.model_id).to(device).eval()
+        for param in self._model.parameters():
+            param.requires_grad_(False)
+
+    @torch.no_grad()
+    def encode(self, wave: np.ndarray) -> np.ndarray:
+        inputs = self._processor(wave, sampling_rate=self.sample_rate, return_tensors="pt")
+        input_values = inputs.input_values.to(self._device)
+        hidden = self._model(input_values).last_hidden_state.squeeze(0)
+        return hidden.cpu().numpy()
+
+
 BACKEND_REGISTRY: dict[str, type[AudioEmbeddingBackend]] = {
     Wav2Vec2Backend.name: Wav2Vec2Backend,
+    WavLMBackend.name: WavLMBackend,
+    HubertBackend.name: HubertBackend,
 }
 
 
