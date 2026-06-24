@@ -15,6 +15,7 @@ data/transcripts/
 data/tts_audio/
 data/features/audio/
 data/features/lips/
+data/derived/
 models/checkpoints/
 runs/
 release/
