@@ -337,3 +337,87 @@ def test_write_manifest_rejects_unknown_columns(tmp_path):
     out = tmp_path / "x.csv"
     with pytest.raises(ValueError, match=r"unknown column"):
         write_manifest([{"sample_id": "s", "evil_extra": "boom"}], out)
+
+
+def _fixture_tree(tmp_path: Path) -> dict[str, Path]:
+    """Build a tiny manifest + splits + tts_audio tree under tmp_path."""
+    manifest = tmp_path / "manifest.csv"
+    _write_manifest_csv(manifest, [("src_a", "real"), ("src_b", "echomimic")])
+
+    splits = tmp_path / "splits"
+    _write_split_csv(splits / "train.csv", ["src_a"])
+    _write_split_csv(splits / "val.csv", ["src_b"], source_folder="echomimic")
+    _write_split_csv(splits / "test.csv", [])
+
+    tts = tmp_path / "tts_audio"
+    _write_jsonl(tts / "manifest.jsonl", [{
+        "provider": "elevenlabs", "video_id": "src_a", "voice_id": "V1",
+        "source_folder": "real",
+        "synthetic_audio_path": "data/tts_audio/elevenlabs/real/src_a__voice-V1.mp3",
+    }])
+    _write_jsonl(tts / "google_tts_manifest.jsonl", [{
+        "provider": "google_tts", "video_id": "src_b", "voice_name": "en-US-Neural2-A",
+        "source_folder": "echomimic",
+        "synthetic_audio_path": "data/tts_audio/google_tts/echomimic/src_b__voice-en-US-Neural2-A.mp3",
+    }])
+    return {"manifest": manifest, "splits": splits, "tts": tts}
+
+
+def test_build_audio_spoof_manifest_writes_native_and_generated_rows(tmp_path):
+    from src.data.build_speech_manifests import build_audio_spoof_manifest
+
+    p = _fixture_tree(tmp_path)
+    out = tmp_path / "derived" / "audio_spoof_manifest.csv"
+
+    stats = build_audio_spoof_manifest(
+        manifest_path=p["manifest"],
+        splits_dir=p["splits"],
+        tts_dir=p["tts"],
+        out_path=out,
+        providers=["elevenlabs", "google_tts"],
+    )
+
+    assert stats["native_rows"] == 2
+    assert stats["generated_rows"] == 2
+    assert stats["excluded"] == []
+
+    with out.open(newline="") as f:
+        rows = list(csv.DictReader(f))
+    assert len(rows) == 4
+    by_label = {}
+    for r in rows:
+        by_label.setdefault(r["audio_label"], 0)
+        by_label[r["audio_label"]] += 1
+    assert by_label == {"bonafide": 2, "spoof": 2}
+
+    # Spec §2: echomimic original audio is bonafide, video is fake.
+    em = [r for r in rows if r["source_video_id"] == "src_b" and r["provider"] == "original"][0]
+    assert em["audio_label"] == "bonafide"
+    assert em["video_label"] == "fake"
+
+    # Generated rows have video_label=na and blank video_label_binary.
+    gens = [r for r in rows if r["audio_label"] == "spoof"]
+    for r in gens:
+        assert r["video_label"] == "na"
+        assert r["video_label_binary"] == ""
+
+
+def test_build_audio_spoof_manifest_inherits_split_for_generated(tmp_path):
+    from src.data.build_speech_manifests import build_audio_spoof_manifest
+
+    p = _fixture_tree(tmp_path)
+    out = tmp_path / "derived" / "audio_spoof_manifest.csv"
+    build_audio_spoof_manifest(
+        manifest_path=p["manifest"],
+        splits_dir=p["splits"],
+        tts_dir=p["tts"],
+        out_path=out,
+        providers=["elevenlabs", "google_tts"],
+    )
+
+    with out.open(newline="") as f:
+        rows = list(csv.DictReader(f))
+    gen_by_src = {r["source_video_id"]: r["split"]
+                  for r in rows if r["audio_label"] == "spoof"}
+    assert gen_by_src["src_a"] == "train"
+    assert gen_by_src["src_b"] == "val"

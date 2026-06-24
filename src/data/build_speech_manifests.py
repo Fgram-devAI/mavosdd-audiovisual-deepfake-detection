@@ -291,3 +291,27 @@ def write_manifest(rows: list[dict], path: Path) -> None:
         writer.writeheader()
         for row in rows:
             writer.writerow({col: row.get(col, "") for col in SCHEMA})
+
+
+def _native_source_folder_map(rows: list[dict]) -> dict[str, str]:
+    return {r["source_video_id"]: r["source_folder"] for r in rows}
+
+
+def build_audio_spoof_manifest(
+    manifest_path: Path,
+    splits_dir: Path,
+    tts_dir: Path,
+    out_path: Path,
+    providers: list[str],
+) -> dict:
+    split_map = load_split_map(splits_dir)
+    native = iter_native_rows(manifest_path, split_map)
+    folder_map = _native_source_folder_map(native)
+    tts_records = iter_tts_records(tts_dir, providers)
+    generated, excluded = iter_generated_rows(tts_records, split_map, folder_map)
+    write_manifest(native + generated, out_path)
+    return {
+        "native_rows": len(native),
+        "generated_rows": len(generated),
+        "excluded": excluded,
+    }
