@@ -20,10 +20,14 @@ FEAT_AUDIO_GEN_DIR = DATA_ROOT / "features" / "audio_generated"
 FEAT_AUDIO_WAV2VEC2_DIR = DATA_ROOT / "features" / "audio_wav2vec2"
 FEAT_AUDIO_WAVLM_DIR = DATA_ROOT / "features" / "audio_wavlm"
 FEAT_AUDIO_HUBERT_DIR = DATA_ROOT / "features" / "audio_hubert"
+FEAT_AUDIO_MEL_DIR = DATA_ROOT / "features" / "audio_mel"
 DERIVED_DIR = DATA_ROOT / "derived"
 AUDIO_SPOOF_MANIFEST = DERIVED_DIR / "audio_spoof_manifest.csv"
+AUDIO_SPOOF_MANIFEST_CODEC_MATCHED = DERIVED_DIR / "audio_spoof_manifest_codec_matched.csv"
+AUDIO_SPOOF_MANIFEST_VOICE_SPLIT = DERIVED_DIR / "audio_spoof_manifest_voice_split.csv"
 VISUAL_SPEECH_MANIFEST = DERIVED_DIR / "visual_speech_manifest.csv"
 FUSION_SPEECH_MANIFEST = DERIVED_DIR / "fusion_speech_manifest.csv"
+AUDIO_WAV_CODEC_MATCHED_DIR = DATA_ROOT / "audio_wav_codec_matched"
 
 CAPS = {"real": 500, "echomimic": 250, "memo": 250}
 LABEL_MAP = {"real": 0, "echomimic": 1, "memo": 1}

@@ -11,6 +11,7 @@ data/manifest.csv
 data/quarantine_log.csv
 data/splits/*.csv
 data/audio_wav/
+data/audio_wav_codec_matched/
 data/transcripts/
 data/tts_audio/
 data/features/audio/
@@ -18,6 +19,7 @@ data/features/lips/
 data/features/audio_wav2vec2/
 data/features/audio_wavlm/
 data/features/audio_hubert/
+data/features/audio_mel/
 data/derived/
 models/checkpoints/
 runs/
