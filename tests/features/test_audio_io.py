@@ -80,3 +80,11 @@ def test_load_audio_window_resamples_to_target_sr(tmp_path):
 
     assert out.shape == (64000,)
     assert out.dtype == np.float32
+
+
+def test_load_audio_window_raises_filenotfound_when_path_missing(tmp_path):
+    import pytest
+    from src.features.audio_io import load_audio_window
+
+    with pytest.raises(FileNotFoundError):
+        load_audio_window(tmp_path / "does-not-exist.wav")

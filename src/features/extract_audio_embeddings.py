@@ -91,12 +91,14 @@ def extract(
         source_providers=source_providers,
         limit=limit,
     ):
-        sample_id = row["sample_id"]
+        sample_id = row.get("sample_id") or "<missing>"
         out_path = out_dir / f"{sample_id}.npy"
         if out_path.exists() and not overwrite:
             counts["skipped"] += 1
             continue
         try:
+            if sample_id == "<missing>":
+                raise KeyError("sample_id column missing from manifest row")
             wave = load_audio_window(
                 row["audio_path"],
                 sr=backend.sample_rate,
@@ -123,7 +125,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--out-dir", type=Path, default=None,
                    help="Override the backend-specific default output directory.")
     p.add_argument("--limit", type=int, default=None,
-                   help="Stop after writing this many rows (post-filter).")
+                   help="Stop after iterating this many post-filter rows (skipped + written count toward limit).")
     p.add_argument("--overwrite", action="store_true",
                    help="Re-extract even when {out_dir}/{sample_id}.npy already exists.")
     p.add_argument("--source-provider", action="append", default=None,

@@ -331,3 +331,26 @@ def test_main_rejects_unknown_backend(tmp_path, capsys):
             "--backend", "totally-fake",
             "--manifest", str(manifest),
         ])
+
+
+def test_extract_counts_failure_when_sample_id_column_missing(tmp_path):
+    from src.features.extract_audio_embeddings import extract
+
+    manifest = tmp_path / "m.csv"
+    # Row missing the sample_id column entirely.
+    with manifest.open("w", newline="") as f:
+        import csv as _csv
+        w = _csv.DictWriter(f, fieldnames=["split", "provider", "audio_path"])
+        w.writeheader()
+        w.writerow({"split": "train", "provider": "x", "audio_path": "/tmp/a.mp3"})
+
+    out_dir = tmp_path / "out"
+    backend = _make_fake_backend()
+
+    counts = extract(
+        manifest, backend, out_dir,
+        split=None, source_providers=None, limit=None,
+        overwrite=False, dtype="float16",
+    )
+
+    assert counts == {"written": 0, "skipped": 0, "failed": 1}

@@ -20,6 +20,9 @@ def load_audio_window(
 ) -> np.ndarray:
     """Load ``path`` as mono ``sr`` Hz audio, return a length-``int(sr*seconds)`` float32 window."""
     n_samples = int(sr * seconds)
+    audio_path = Path(path)
+    if not audio_path.exists():
+        raise FileNotFoundError(str(audio_path))
     wave, _ = librosa.load(str(path), sr=sr, mono=True)
     wave = np.asarray(wave, dtype=np.float32)
 
