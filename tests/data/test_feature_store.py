@@ -705,3 +705,76 @@ def test_make_dataloader_iterates_one_batch(tmp_path):
     assert batches[0]["audio"].shape == (2, 199, 768)
     assert batches[0]["label"].shape == (2,)
     assert len(batches[0]["metadata"]) == 2
+
+
+# ---------- Task 8: leakage + backend coverage ----------
+
+def test_datasets_never_open_raw_video_or_wav(monkeypatch, tmp_path):
+    """If dataset code touches a raw media file, this test fails loudly."""
+    import builtins
+    from src.data.feature_store import (
+        AudioFeatureDataset, VisualFeatureDataset, FusionFeatureDataset,
+    )
+
+    manifest = tmp_path / "fusion.csv"
+    audio_dir = tmp_path / "audio_feat"
+    lips_dir = tmp_path / "lips"
+    _write_manifest(manifest, [_audio_row("a", split="train", source_video_id="vid_a")])
+    _write_audio_npy(audio_dir, "a")
+    _write_lip_npz(lips_dir, "vid_a")
+
+    forbidden = (".mp4", ".wav", ".mp3", ".m4a", ".mov", ".webm")
+    real_open = builtins.open
+
+    def guarded_open(path, *args, **kwargs):
+        s = str(path).lower()
+        if any(s.endswith(ext) for ext in forbidden):
+            raise AssertionError(f"dataset code opened raw media file: {path}")
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "open", guarded_open)
+
+    for ds in (
+        AudioFeatureDataset(manifest, split="train", backend="wav2vec2", audio_dir=audio_dir),
+        VisualFeatureDataset(manifest, split="train", lips_dir=lips_dir),
+        FusionFeatureDataset(manifest, split="train", backend="wav2vec2",
+                             audio_dir=audio_dir, lips_dir=lips_dir),
+    ):
+        _ = ds[0]
+
+
+def test_validate_each_audio_backend(tmp_path):
+    """All three audio backends complete a clean validate with no errors."""
+    from src.data.feature_store import validate_feature_store
+
+    manifest = tmp_path / "audio.csv"
+    _write_manifest(manifest, [_audio_row("a", split="train")])
+
+    for backend in ("wav2vec2", "wavlm", "hubert"):
+        audio_dir = tmp_path / f"audio_{backend}"
+        _write_audio_npy(audio_dir, "a")
+        report = validate_feature_store(
+            "audio", manifest, backend=backend, audio_dir=audio_dir,
+        )
+        assert report.missing == []
+        assert report.bad_shape == []
+
+
+def test_validate_fusion_each_backend(tmp_path):
+    """Fusion validation works against each audio backend independently."""
+    from src.data.feature_store import validate_feature_store
+
+    manifest = tmp_path / "fusion.csv"
+    lips_dir = tmp_path / "lips"
+    _write_manifest(manifest, [_audio_row("a", split="train", source_video_id="vid_a")])
+    _write_lip_npz(lips_dir, "vid_a")
+
+    for backend in ("wav2vec2", "wavlm", "hubert"):
+        audio_dir = tmp_path / f"audio_{backend}"
+        _write_audio_npy(audio_dir, "a")
+        report = validate_feature_store(
+            "fusion", manifest, backend=backend,
+            audio_dir=audio_dir, lips_dir=lips_dir,
+        )
+        assert report.missing == []
+        assert report.bad_shape == []
