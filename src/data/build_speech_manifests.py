@@ -201,12 +201,15 @@ def _scan_provider_dir(provider: str, provider_dir: Path) -> list[dict]:
 def iter_tts_records(tts_dir: Path, providers: list[str]) -> list[dict]:
     """Return normalized TTS records for each requested provider.
 
-    JSONL is preferred per provider when present; otherwise the provider's
-    subdirectory is walked for *.mp3 files.
+    Unions JSONL records with a filesystem scan and dedupes by
+    (provider, source_video_id, voice). A stale or incomplete JSONL no
+    longer suppresses *.mp3 files that exist on disk. JSONL is iterated
+    first so its richer metadata wins on collisions.
     """
     tts_dir = Path(tts_dir)
     out: list[dict] = []
     for provider in providers:
+        jsonl_records: list[dict] = []
         jsonl_name = PROVIDER_JSONL.get(provider)
         jsonl_path = tts_dir / jsonl_name if jsonl_name else None
         if jsonl_path and jsonl_path.exists():
@@ -218,11 +221,20 @@ def iter_tts_records(tts_dir: Path, providers: list[str]) -> list[dict]:
                     rec = json.loads(line)
                     norm = _normalize_jsonl_record(provider, rec)
                     if norm is not None:
-                        out.append(norm)
-            continue
+                        jsonl_records.append(norm)
+
+        fs_records: list[dict] = []
         subdir = PROVIDER_DIR.get(provider)
         if subdir:
-            out.extend(_scan_provider_dir(provider, tts_dir / subdir))
+            fs_records = _scan_provider_dir(provider, tts_dir / subdir)
+
+        seen: set[tuple[str, str, str]] = set()
+        for rec in jsonl_records + fs_records:
+            key = (rec["provider"], rec["source_video_id"], rec.get("voice", ""))
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(rec)
     return out
 
 
@@ -553,9 +565,8 @@ def validate_manifests(
                     f"{name}: {row.get('source_folder')} original audio relabeled spoof: {sid}"
                 )
 
-            # §9.7: generated rows must be spoof.
+            # §9.7: every generated provider row must be spoof regardless of media_type.
             if (row.get("provider") in ("elevenlabs", "google_tts", "elevenlabs_sts")
-                    and row.get("media_type") == "audio"
                     and row.get("audio_label") != "spoof"):
                 issues.append(
                     f"{name}: generated row not labeled spoof: {sid}"

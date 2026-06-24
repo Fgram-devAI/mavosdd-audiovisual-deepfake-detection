@@ -216,6 +216,49 @@ def test_iter_tts_records_skips_provider_not_requested(tmp_path):
     assert out == []
 
 
+def test_iter_tts_records_unions_jsonl_with_filesystem(tmp_path):
+    from src.data.build_speech_manifests import iter_tts_records
+
+    tts_dir = tmp_path / "tts_audio"
+    _write_jsonl(tts_dir / "manifest.jsonl", [{
+        "provider": "elevenlabs",
+        "video_id": "in_jsonl",
+        "voice_id": "VJ",
+        "source_folder": "real",
+        "synthetic_audio_path": "data/tts_audio/elevenlabs/real/in_jsonl__voice-VJ.mp3",
+    }])
+    # Additional mp3 on disk that the JSONL doesn't list.
+    _touch_mp3(tts_dir / "elevenlabs" / "echomimic" / "only_on_disk__voice-VD.mp3")
+
+    out = iter_tts_records(tts_dir, providers=["elevenlabs"])
+
+    by_source = {r["source_video_id"]: r for r in out}
+    assert "in_jsonl" in by_source
+    assert "only_on_disk" in by_source
+    assert by_source["only_on_disk"]["source_folder"] == "echomimic"
+    assert by_source["only_on_disk"]["voice"] == "VD"
+
+
+def test_iter_tts_records_dedupes_jsonl_and_filesystem_for_same_audio(tmp_path):
+    from src.data.build_speech_manifests import iter_tts_records
+
+    tts_dir = tmp_path / "tts_audio"
+    _write_jsonl(tts_dir / "manifest.jsonl", [{
+        "provider": "elevenlabs",
+        "video_id": "shared",
+        "voice_id": "VS",
+        "source_folder": "real",
+        "synthetic_audio_path": "data/tts_audio/elevenlabs/real/shared__voice-VS.mp3",
+    }])
+    _touch_mp3(tts_dir / "elevenlabs" / "real" / "shared__voice-VS.mp3")
+
+    out = iter_tts_records(tts_dir, providers=["elevenlabs"])
+
+    assert len(out) == 1
+    # JSONL wins on collision — keeps the project-relative synthetic_audio_path.
+    assert out[0]["synthetic_audio_path"].startswith("data/tts_audio/")
+
+
 def test_iter_generated_rows_inherits_split_from_source(tmp_path):
     from src.data.build_speech_manifests import iter_generated_rows
 
@@ -337,6 +380,23 @@ def test_write_manifest_rejects_unknown_columns(tmp_path):
     out = tmp_path / "x.csv"
     with pytest.raises(ValueError, match=r"unknown column"):
         write_manifest([{"sample_id": "s", "evil_extra": "boom"}], out)
+
+
+def test_write_manifest_fills_missing_schema_fields_with_blanks(tmp_path):
+    from src.data.build_speech_manifests import SCHEMA, write_manifest
+
+    out = tmp_path / "sparse.csv"
+    write_manifest([{"sample_id": "only_id"}], out)
+
+    with out.open(newline="") as f:
+        reader = csv.DictReader(f)
+        assert reader.fieldnames == list(SCHEMA)
+        rows = list(reader)
+    assert rows[0]["sample_id"] == "only_id"
+    for col in SCHEMA:
+        if col == "sample_id":
+            continue
+        assert rows[0][col] == "", f"{col!r} should be blank when missing"
 
 
 def _fixture_tree(tmp_path: Path) -> dict[str, Path]:
@@ -642,6 +702,33 @@ def test_validate_manifests_detects_echomimic_audio_relabeled_spoof(tmp_path, mo
     monkeypatch.setenv("SPEECH_MANIFEST_SKIP_PATH_EXISTS", "1")
     issues = validate_manifests(out_dir, p["manifest"], p["splits"])
     assert any("echomimic" in s.lower() and "spoof" in s.lower() for s in issues)
+
+
+def test_validate_manifests_flags_generated_pair_row_with_bonafide_audio_label(tmp_path, monkeypatch):
+    from src.data.build_speech_manifests import (SCHEMA, validate_manifests,
+                                                  write_manifest)
+
+    p = _fixture_tree(tmp_path)
+    out_dir = tmp_path / "derived"
+    bad = {col: "" for col in SCHEMA}
+    bad.update({
+        "sample_id": "elevenlabs__src_a__voice-V1",
+        "source_video_id": "src_a", "split": "train",
+        "media_type": "pair",
+        "source_folder": "real", "provider": "elevenlabs",
+        "voice_id_or_name": "V1",
+        "audio_label": "bonafide",  # forbidden for any generated provider
+        "audio_label_binary": 0,
+        "video_label": "real", "video_label_binary": 0,
+        "pair_label": "generated_same_transcript", "pair_label_binary": 1,
+    })
+    write_manifest([bad], out_dir / "fusion_speech_manifest.csv")
+    write_manifest([], out_dir / "audio_spoof_manifest.csv")
+    write_manifest([], out_dir / "visual_speech_manifest.csv")
+
+    monkeypatch.setenv("SPEECH_MANIFEST_SKIP_PATH_EXISTS", "1")
+    issues = validate_manifests(out_dir, p["manifest"], p["splits"])
+    assert any("generated row not labeled spoof" in s for s in issues)
 
 
 def test_cli_default_builds_three_manifests(tmp_path):
