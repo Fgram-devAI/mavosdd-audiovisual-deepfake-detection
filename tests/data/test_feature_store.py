@@ -165,3 +165,133 @@ def test_audio_dataset_missing_file_raises_validation_error(tmp_path):
 
     with pytest.raises(FeatureStoreValidationError, match=r"missing audio feature"):
         _ = ds[0]
+
+
+# ---------- Task 3: VisualFeatureDataset ----------
+
+def _write_lip_npz(dir_path: Path, source_video_id: str, t: int = 20, dim: int = 84,
+                   *, mask: np.ndarray | None = None,
+                   feats: np.ndarray | None = None,
+                   key_override: str | None = None,
+                   omit_mask: bool = False) -> Path:
+    dir_path.mkdir(parents=True, exist_ok=True)
+    feats = feats if feats is not None else np.random.randn(t, dim).astype(np.float32)
+    mask = mask if mask is not None else np.ones(t, dtype=np.float32)
+    out = dir_path / f"{source_video_id}.npz"
+    if key_override is not None:
+        np.savez(out, **{key_override: feats, "mask": mask})
+    elif omit_mask:
+        np.savez(out, feats=feats)
+    else:
+        np.savez(out, feats=feats, mask=mask)
+    return out
+
+
+def test_visual_dataset_filters_split_and_returns_pair_label(tmp_path):
+    from src.data.feature_store import VisualFeatureDataset
+
+    manifest = tmp_path / "visual.csv"
+    lips_dir = tmp_path / "lips"
+    _write_manifest(manifest, [
+        _audio_row("a", split="train", pair_label_binary="0", source_video_id="vid_a"),
+        _audio_row("b", split="val",   pair_label_binary="1", source_video_id="vid_b"),
+        _audio_row("c", split="train", pair_label_binary="1", source_video_id="vid_c"),
+    ])
+    for vid in ("vid_a", "vid_b", "vid_c"):
+        _write_lip_npz(lips_dir, vid)
+
+    ds = VisualFeatureDataset(manifest, split="train", lips_dir=lips_dir)
+
+    assert len(ds) == 2
+    item = ds[0]
+    assert item["sample_id"] == "a"
+    assert item["source_video_id"] == "vid_a"
+    assert item["lips"].dtype == torch.float32
+    assert item["lips"].shape == (20, 84)
+    assert item["lips_mask"].shape == (20,)
+    assert int(item["label"].item()) == 0
+    assert int(ds[1]["label"].item()) == 1
+
+
+def test_visual_dataset_missing_npz_raises(tmp_path):
+    from src.data.feature_store import VisualFeatureDataset, FeatureStoreValidationError
+
+    manifest = tmp_path / "visual.csv"
+    lips_dir = tmp_path / "lips"
+    _write_manifest(manifest, [_audio_row("a", split="train", source_video_id="vid_a")])
+
+    ds = VisualFeatureDataset(manifest, split="train", lips_dir=lips_dir)
+    with pytest.raises(FeatureStoreValidationError, match=r"missing lip feature"):
+        _ = ds[0]
+
+
+def test_visual_dataset_rejects_wrong_npz_key(tmp_path):
+    from src.data.feature_store import VisualFeatureDataset, FeatureStoreValidationError
+
+    manifest = tmp_path / "visual.csv"
+    lips_dir = tmp_path / "lips"
+    _write_manifest(manifest, [_audio_row("a", split="train", source_video_id="vid_a")])
+    _write_lip_npz(lips_dir, "vid_a", key_override="wrong_key")
+
+    ds = VisualFeatureDataset(manifest, split="train", lips_dir=lips_dir)
+    with pytest.raises(FeatureStoreValidationError, match=r"missing 'feats' key"):
+        _ = ds[0]
+
+
+def test_visual_dataset_rejects_nan_inf(tmp_path):
+    from src.data.feature_store import VisualFeatureDataset, FeatureStoreValidationError
+
+    manifest = tmp_path / "visual.csv"
+    lips_dir = tmp_path / "lips"
+    _write_manifest(manifest, [_audio_row("a", split="train", source_video_id="vid_a")])
+
+    bad = np.random.randn(20, 84).astype(np.float32)
+    bad[3, 4] = np.nan
+    _write_lip_npz(lips_dir, "vid_a", feats=bad)
+
+    ds = VisualFeatureDataset(manifest, split="train", lips_dir=lips_dir)
+    with pytest.raises(FeatureStoreValidationError, match=r"NaN|Inf"):
+        _ = ds[0]
+
+
+def test_visual_dataset_rejects_missing_mask(tmp_path):
+    from src.data.feature_store import VisualFeatureDataset, FeatureStoreValidationError
+
+    manifest = tmp_path / "visual.csv"
+    lips_dir = tmp_path / "lips"
+    _write_manifest(manifest, [_audio_row("a", split="train", source_video_id="vid_a")])
+    _write_lip_npz(lips_dir, "vid_a", omit_mask=True)
+
+    ds = VisualFeatureDataset(manifest, split="train", lips_dir=lips_dir)
+    with pytest.raises(FeatureStoreValidationError, match=r"missing 'mask' key"):
+        _ = ds[0]
+
+
+def test_visual_dataset_rejects_mask_shape_mismatch(tmp_path):
+    from src.data.feature_store import VisualFeatureDataset, FeatureStoreValidationError
+
+    manifest = tmp_path / "visual.csv"
+    lips_dir = tmp_path / "lips"
+    _write_manifest(manifest, [_audio_row("a", split="train", source_video_id="vid_a")])
+    feats = np.random.randn(20, 84).astype(np.float32)
+    mask_wrong = np.ones(19, dtype=np.float32)  # length != feats.shape[0]
+    _write_lip_npz(lips_dir, "vid_a", feats=feats, mask=mask_wrong)
+
+    ds = VisualFeatureDataset(manifest, split="train", lips_dir=lips_dir)
+    with pytest.raises(FeatureStoreValidationError, match=r"mask.*shape"):
+        _ = ds[0]
+
+
+def test_visual_dataset_rejects_mask_not_1d(tmp_path):
+    from src.data.feature_store import VisualFeatureDataset, FeatureStoreValidationError
+
+    manifest = tmp_path / "visual.csv"
+    lips_dir = tmp_path / "lips"
+    _write_manifest(manifest, [_audio_row("a", split="train", source_video_id="vid_a")])
+    feats = np.random.randn(20, 84).astype(np.float32)
+    mask_2d = np.ones((20, 1), dtype=np.float32)
+    _write_lip_npz(lips_dir, "vid_a", feats=feats, mask=mask_2d)
+
+    ds = VisualFeatureDataset(manifest, split="train", lips_dir=lips_dir)
+    with pytest.raises(FeatureStoreValidationError, match=r"mask.*1-D|mask.*rank"):
+        _ = ds[0]

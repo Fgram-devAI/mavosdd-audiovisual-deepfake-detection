@@ -127,3 +127,75 @@ class AudioFeatureDataset(Dataset):
         }
         item.update(_row_metadata(row))
         return item
+
+
+def _load_lip_array(path: Path) -> tuple[np.ndarray, np.ndarray]:
+    if not path.exists():
+        raise FeatureStoreValidationError(f"missing lip feature: {path}")
+    with np.load(path) as npz:
+        if "feats" not in npz.files:
+            raise FeatureStoreValidationError(
+                f"lip feature {path} missing 'feats' key (found {list(npz.files)!r})"
+            )
+        if "mask" not in npz.files:
+            raise FeatureStoreValidationError(
+                f"lip feature {path} missing 'mask' key (found {list(npz.files)!r})"
+            )
+        feats = np.asarray(npz["feats"])
+        mask = np.asarray(npz["mask"])
+    if not np.issubdtype(feats.dtype, np.floating) and not np.issubdtype(feats.dtype, np.integer):
+        raise FeatureStoreValidationError(
+            f"lip feature {path} 'feats' must be numeric, got dtype {feats.dtype}"
+        )
+    if feats.ndim != 2:
+        raise FeatureStoreValidationError(
+            f"lip feature {path} 'feats' must be rank-2, got shape {feats.shape}"
+        )
+    if feats.shape[0] <= 0 or feats.shape[1] <= 0:
+        raise FeatureStoreValidationError(
+            f"lip feature {path} 'feats' has non-positive dim: shape {feats.shape}"
+        )
+    if mask.ndim != 1:
+        raise FeatureStoreValidationError(
+            f"lip feature {path} 'mask' must be 1-D (rank-1), got shape {mask.shape}"
+        )
+    if mask.shape[0] != feats.shape[0]:
+        raise FeatureStoreValidationError(
+            f"lip feature {path} 'mask' shape {mask.shape} does not match "
+            f"feats time dim {feats.shape[0]}"
+        )
+    if not np.isfinite(feats).all():
+        raise FeatureStoreValidationError(
+            f"lip feature {path} 'feats' contains NaN or Inf"
+        )
+    return feats.astype(np.float32, copy=False), mask.astype(np.float32, copy=False)
+
+
+class VisualFeatureDataset(Dataset):
+    """Lip-only dataset over data/features/lips/{source_video_id}.npz."""
+
+    def __init__(
+        self,
+        manifest_path: str | Path,
+        *,
+        split: str,
+        lips_dir: Path | None = None,
+    ) -> None:
+        self._rows = _filter_split(_read_manifest_rows(manifest_path), split)
+        self._lips_dir = Path(lips_dir) if lips_dir is not None else common.FEAT_LIPS_DIR
+        self.split = split
+
+    def __len__(self) -> int:
+        return len(self._rows)
+
+    def __getitem__(self, idx: int) -> dict:
+        row = self._rows[idx]
+        lip_path = self._lips_dir / f"{row['source_video_id']}.npz"
+        feats, mask = _load_lip_array(lip_path)
+        item = {
+            "lips": torch.from_numpy(feats),
+            "lips_mask": torch.from_numpy(mask),
+            "label": _label_long(row, "pair_label_binary"),
+        }
+        item.update(_row_metadata(row))
+        return item
