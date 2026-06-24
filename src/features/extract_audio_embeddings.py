@@ -19,6 +19,7 @@ from typing import Iterator
 
 import numpy as np
 import torch
+from tqdm import tqdm
 
 from src import common
 from src.features.audio_backends import (
@@ -37,6 +38,19 @@ DEFAULT_DIR_BY_BACKEND: dict[str, Path] = {
 }
 
 DTYPE_MAP: dict[str, type] = {"float16": np.float16, "float32": np.float32}
+
+DEVICE_CHOICES = ("auto", "cuda", "mps", "cpu")
+
+
+def pick_device(name: str = "auto") -> torch.device:
+    """Resolve a torch device. ``auto`` picks cuda > mps > cpu."""
+    if name == "auto":
+        if torch.cuda.is_available():
+            return torch.device("cuda")
+        if torch.backends.mps.is_available():
+            return torch.device("mps")
+        return torch.device("cpu")
+    return torch.device(name)
 
 
 def default_out_dir(backend_name: str) -> Path:
@@ -85,12 +99,13 @@ def extract(
     target_dtype = DTYPE_MAP[dtype]
 
     counts = {"written": 0, "skipped": 0, "failed": 0}
-    for row in iter_manifest_rows(
+    rows = list(iter_manifest_rows(
         manifest_path,
         split=split,
         source_providers=source_providers,
         limit=limit,
-    ):
+    ))
+    for row in tqdm(rows, desc=f"{backend.name} embeddings", unit="row"):
         sample_id = row.get("sample_id") or "<missing>"
         out_path = out_dir / f"{sample_id}.npy"
         if out_path.exists() and not overwrite:
@@ -108,7 +123,7 @@ def extract(
             np.save(out_path, arr)
             counts["written"] += 1
         except Exception as exc:  # noqa: BLE001 — extractor must continue past per-row errors
-            logger.error("[FAIL] %s: %s", sample_id, exc)
+            tqdm.write(f"[FAIL] {sample_id}: {exc}")
             counts["failed"] += 1
     return counts
 
@@ -134,6 +149,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Restrict to a single split.")
     p.add_argument("--dtype", choices=tuple(DTYPE_MAP), default="float16",
                    help="Numpy dtype written to disk. Default: float16.")
+    p.add_argument("--device", choices=DEVICE_CHOICES, default="auto",
+                   help="Compute device. 'auto' picks cuda > mps > cpu.")
     return p
 
 
@@ -142,7 +159,8 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     out_dir = args.out_dir if args.out_dir is not None else default_out_dir(args.backend)
     providers = tuple(args.source_provider) if args.source_provider else None
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = pick_device(args.device)
+    print(f"backend={args.backend} device={device}")
 
     backend = load_backend(args.backend, device)
     counts = extract(

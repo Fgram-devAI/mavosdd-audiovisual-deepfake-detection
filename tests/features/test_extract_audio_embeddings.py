@@ -354,3 +354,32 @@ def test_extract_counts_failure_when_sample_id_column_missing(tmp_path):
     )
 
     assert counts == {"written": 0, "skipped": 0, "failed": 1}
+
+
+# ---------- pick_device ----------
+
+def test_pick_device_explicit_cpu_returns_cpu():
+    import torch
+    from src.features.extract_audio_embeddings import pick_device
+
+    assert pick_device("cpu") == torch.device("cpu")
+
+
+def test_pick_device_auto_falls_back_to_cpu_when_no_accelerator(monkeypatch):
+    import torch
+    from src.features.extract_audio_embeddings import pick_device
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    monkeypatch.setattr(torch.backends.mps, "is_available", lambda: False)
+
+    assert pick_device("auto") == torch.device("cpu")
+
+
+def test_pick_device_auto_prefers_mps_when_cuda_unavailable(monkeypatch):
+    import torch
+    from src.features.extract_audio_embeddings import pick_device
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    monkeypatch.setattr(torch.backends.mps, "is_available", lambda: True)
+
+    assert pick_device("auto") == torch.device("mps")
