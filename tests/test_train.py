@@ -349,6 +349,78 @@ class TestTrainHarness:
         assert stats.audio_mean is not None and stats.audio_std is not None
         assert stats.lips_mean is not None and stats.lips_std is not None
 
+    def test_build_datasets_visual_drop_no_face_filters_train_but_not_val(self, tmp_path):
+        manifest, lips_dir = _build_visual_fixture(tmp_path, n_train=4, n_val=2)
+        # Zero out one train mask and one val mask, then re-save.
+        bad_train_sid = "train_0"
+        bad_val_sid = "val_0"
+        for sid in (bad_train_sid, bad_val_sid):
+            path = lips_dir / f"{sid}.npz"
+            feats = np.load(path)["feats"]
+            np.savez(path, feats=feats, mask=np.zeros(20, dtype=np.float32))
+
+        cfg = train_mod.RunConfig(
+            modality="visual", backend="wav2vec2",
+            manifest=manifest, audio_dir=tmp_path / "unused",
+            batch_size=2, epochs=1, lr=1e-4, weight_decay=1e-2,
+            dropout=0.3, patience=2, device="cpu", seed=42,
+            run_name="t", runs_dir=tmp_path / "runs",
+            checkpoint_path=tmp_path / "ckpt.pt",
+        )
+        train_ds, val_ds, _ = train_mod.build_datasets(
+            cfg, lips_dir=lips_dir, drop_no_face_train=True,
+        )
+        # Train: 4 originally, 1 dropped -> 3 kept.
+        assert len(train_ds) == 3
+        assert train_ds.dropped_no_face_ids == [bad_train_sid]
+        # Val: 2 originally, none dropped (filter is train-only).
+        assert len(val_ds) == 2
+        assert val_ds.dropped_no_face_ids == []
+
+    def test_build_datasets_fusion_drop_no_face_filters_train_but_not_val(self, tmp_path):
+        manifest, audio_dir, lips_dir = _build_fusion_fixture(tmp_path, n_train=4, n_val=2)
+        bad_train_sid = "train_0"
+        bad_val_sid = "val_0"
+        for sid in (bad_train_sid, bad_val_sid):
+            path = lips_dir / f"{sid}.npz"
+            feats = np.load(path)["feats"]
+            np.savez(path, feats=feats, mask=np.zeros(20, dtype=np.float32))
+
+        cfg = train_mod.RunConfig(
+            modality="fusion", backend="wav2vec2",
+            manifest=manifest, audio_dir=audio_dir,
+            batch_size=2, epochs=1, lr=1e-4, weight_decay=1e-2,
+            dropout=0.3, patience=2, device="cpu", seed=42,
+            run_name="t", runs_dir=tmp_path / "runs",
+            checkpoint_path=tmp_path / "ckpt.pt",
+        )
+        train_ds, val_ds, _ = train_mod.build_datasets(
+            cfg, lips_dir=lips_dir, drop_no_face_train=True,
+        )
+        assert len(train_ds) == 3
+        assert train_ds.dropped_no_face_ids == [bad_train_sid]
+        assert len(val_ds) == 2
+        assert val_ds.dropped_no_face_ids == []
+
+    def test_build_datasets_drop_no_face_default_is_off(self, tmp_path):
+        """Default behavior preserves NO-FACE rows for backward compatibility."""
+        manifest, lips_dir = _build_visual_fixture(tmp_path, n_train=2, n_val=2)
+        path = lips_dir / "train_0.npz"
+        feats = np.load(path)["feats"]
+        np.savez(path, feats=feats, mask=np.zeros(20, dtype=np.float32))
+
+        cfg = train_mod.RunConfig(
+            modality="visual", backend="wav2vec2",
+            manifest=manifest, audio_dir=tmp_path / "unused",
+            batch_size=2, epochs=1, lr=1e-4, weight_decay=1e-2,
+            dropout=0.3, patience=2, device="cpu", seed=42,
+            run_name="t", runs_dir=tmp_path / "runs",
+            checkpoint_path=tmp_path / "ckpt.pt",
+        )
+        train_ds, val_ds, _ = train_mod.build_datasets(cfg, lips_dir=lips_dir)
+        assert len(train_ds) == 2  # NO-FACE row still present
+        assert train_ds.dropped_no_face_ids == []
+
     def test_param_budget_asserted_visual_and_fusion(self, tmp_path):
         for modality in ("visual", "fusion"):
             cfg = train_mod.RunConfig(

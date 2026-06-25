@@ -175,6 +175,40 @@ def _load_lip_array(path: Path) -> tuple[np.ndarray, np.ndarray]:
     return feats.astype(np.float32, copy=False), mask.astype(np.float32, copy=False)
 
 
+def _mask_sum_or_none(lip_path: Path) -> float | None:
+    """Cheap read of just the mask array. Returns None if the file can't be probed."""
+    if not lip_path.exists():
+        return None
+    try:
+        with np.load(lip_path) as npz:
+            if "mask" not in npz.files:
+                return None
+            mask = np.asarray(npz["mask"])
+        if mask.size == 0:
+            return None
+        return float(mask.sum())
+    except (OSError, ValueError, EOFError):
+        return None
+
+
+def _partition_no_face(rows: list[dict], lips_dir: Path) -> tuple[list[dict], list[str]]:
+    """Split rows into (kept, dropped_sample_ids) based on whether mask.sum() == 0.
+
+    Rows whose .npz is missing or malformed are kept — __getitem__ will raise on them
+    at training time the same way it always did, preserving existing error semantics.
+    """
+    kept: list[dict] = []
+    dropped: list[str] = []
+    for row in rows:
+        vid = row.get("source_video_id", "")
+        s = _mask_sum_or_none(lips_dir / f"{vid}.npz")
+        if s == 0.0:
+            dropped.append(row.get("sample_id", vid))
+        else:
+            kept.append(row)
+    return kept, dropped
+
+
 class VisualFeatureDataset(Dataset):
     """Lip-only dataset over data/features/lips/{source_video_id}.npz."""
 
@@ -185,11 +219,18 @@ class VisualFeatureDataset(Dataset):
         split: str,
         lips_dir: Path | None = None,
         normalization: "NormalizationStats | None" = None,
+        drop_no_face: bool = False,
     ) -> None:
-        self._rows = _filter_split(_read_manifest_rows(manifest_path), split)
+        rows = _filter_split(_read_manifest_rows(manifest_path), split)
         self._lips_dir = Path(lips_dir) if lips_dir is not None else common.FEAT_LIPS_DIR
         self.split = split
         self._normalization = normalization
+        self.drop_no_face = drop_no_face
+        if drop_no_face:
+            rows, self.dropped_no_face_ids = _partition_no_face(rows, self._lips_dir)
+        else:
+            self.dropped_no_face_ids = []
+        self._rows = rows
 
     def __len__(self) -> int:
         return len(self._rows)
@@ -221,13 +262,20 @@ class FusionFeatureDataset(Dataset):
         audio_dir: Path | None = None,
         lips_dir: Path | None = None,
         normalization: "NormalizationStats | None" = None,
+        drop_no_face: bool = False,
     ) -> None:
-        self._rows = _filter_split(_read_manifest_rows(manifest_path), split)
+        rows = _filter_split(_read_manifest_rows(manifest_path), split)
         self._audio_dir = Path(audio_dir) if audio_dir is not None else resolve_audio_backend_dir(backend)
         self._lips_dir = Path(lips_dir) if lips_dir is not None else common.FEAT_LIPS_DIR
         self.backend = backend
         self.split = split
         self._normalization = normalization
+        self.drop_no_face = drop_no_face
+        if drop_no_face:
+            rows, self.dropped_no_face_ids = _partition_no_face(rows, self._lips_dir)
+        else:
+            self.dropped_no_face_ids = []
+        self._rows = rows
 
     def __len__(self) -> int:
         return len(self._rows)

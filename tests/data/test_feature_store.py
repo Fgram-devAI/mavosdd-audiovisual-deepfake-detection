@@ -778,3 +778,112 @@ def test_validate_fusion_each_backend(tmp_path):
         )
         assert report.missing == []
         assert report.bad_shape == []
+
+
+# ---------- drop_no_face: filter zero-mask rows ----------
+
+def test_visual_dataset_drop_no_face_excludes_zero_mask_rows(tmp_path):
+    from src.data.feature_store import VisualFeatureDataset
+
+    manifest = tmp_path / "visual.csv"
+    lips_dir = tmp_path / "lips"
+    _write_manifest(manifest, [
+        _audio_row("a", split="train", source_video_id="vid_a"),
+        _audio_row("b", split="train", source_video_id="vid_b"),
+        _audio_row("c", split="train", source_video_id="vid_c"),
+    ])
+    _write_lip_npz(lips_dir, "vid_a")  # mask all-ones (kept)
+    _write_lip_npz(lips_dir, "vid_b", mask=np.zeros(20, dtype=np.float32))  # NO-FACE (dropped)
+    _write_lip_npz(lips_dir, "vid_c")  # mask all-ones (kept)
+
+    ds = VisualFeatureDataset(manifest, split="train", lips_dir=lips_dir, drop_no_face=True)
+
+    assert len(ds) == 2
+    kept_ids = {ds[i]["source_video_id"] for i in range(len(ds))}
+    assert kept_ids == {"vid_a", "vid_c"}
+    assert ds.dropped_no_face_ids == ["b"]
+
+
+def test_visual_dataset_drop_no_face_default_false_keeps_zero_mask_rows(tmp_path):
+    from src.data.feature_store import VisualFeatureDataset
+
+    manifest = tmp_path / "visual.csv"
+    lips_dir = tmp_path / "lips"
+    _write_manifest(manifest, [
+        _audio_row("a", split="train", source_video_id="vid_a"),
+        _audio_row("b", split="train", source_video_id="vid_b"),
+    ])
+    _write_lip_npz(lips_dir, "vid_a")
+    _write_lip_npz(lips_dir, "vid_b", mask=np.zeros(20, dtype=np.float32))
+
+    ds = VisualFeatureDataset(manifest, split="train", lips_dir=lips_dir)
+
+    assert len(ds) == 2
+    assert ds.dropped_no_face_ids == []
+
+
+def test_fusion_dataset_drop_no_face_excludes_zero_mask_rows(tmp_path):
+    from src.data.feature_store import FusionFeatureDataset
+
+    manifest = tmp_path / "fusion.csv"
+    audio_dir = tmp_path / "audio_feat"
+    lips_dir = tmp_path / "lips"
+    _write_manifest(manifest, [
+        _audio_row("a", split="train", source_video_id="vid_a"),
+        _audio_row("b", split="train", source_video_id="vid_b"),
+        _audio_row("c", split="train", source_video_id="vid_c"),
+    ])
+    for sid in ("a", "b", "c"):
+        _write_audio_npy(audio_dir, sid)
+    _write_lip_npz(lips_dir, "vid_a")
+    _write_lip_npz(lips_dir, "vid_b", mask=np.zeros(20, dtype=np.float32))
+    _write_lip_npz(lips_dir, "vid_c")
+
+    ds = FusionFeatureDataset(
+        manifest, split="train", backend="wav2vec2",
+        audio_dir=audio_dir, lips_dir=lips_dir, drop_no_face=True,
+    )
+
+    assert len(ds) == 2
+    kept_ids = {ds[i]["source_video_id"] for i in range(len(ds))}
+    assert kept_ids == {"vid_a", "vid_c"}
+    assert ds.dropped_no_face_ids == ["b"]
+
+
+def test_drop_no_face_keeps_rows_with_partial_mask(tmp_path):
+    """Rows with any non-zero mask frame are kept; only fully-zero masks are dropped."""
+    from src.data.feature_store import VisualFeatureDataset
+
+    manifest = tmp_path / "visual.csv"
+    lips_dir = tmp_path / "lips"
+    _write_manifest(manifest, [
+        _audio_row("a", split="train", source_video_id="vid_a"),
+    ])
+    partial = np.zeros(20, dtype=np.float32)
+    partial[5] = 1.0
+    _write_lip_npz(lips_dir, "vid_a", mask=partial)
+
+    ds = VisualFeatureDataset(manifest, split="train", lips_dir=lips_dir, drop_no_face=True)
+
+    assert len(ds) == 1
+    assert ds.dropped_no_face_ids == []
+
+
+def test_drop_no_face_preserves_row_for_broken_npz(tmp_path):
+    """Missing/unreadable .npz: filter keeps the row so __getitem__ raises at training time."""
+    from src.data.feature_store import VisualFeatureDataset, FeatureStoreValidationError
+
+    manifest = tmp_path / "visual.csv"
+    lips_dir = tmp_path / "lips"
+    _write_manifest(manifest, [
+        _audio_row("a", split="train", source_video_id="vid_a"),  # missing .npz
+        _audio_row("b", split="train", source_video_id="vid_b"),
+    ])
+    _write_lip_npz(lips_dir, "vid_b")
+
+    ds = VisualFeatureDataset(manifest, split="train", lips_dir=lips_dir, drop_no_face=True)
+
+    assert len(ds) == 2
+    assert ds.dropped_no_face_ids == []
+    with pytest.raises(FeatureStoreValidationError, match=r"missing lip feature"):
+        _ = ds[0]

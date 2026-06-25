@@ -46,3 +46,6 @@ prompts/
 superpowers/
 docs/prompts/
 docs/superpowers/
+data/splits.phase1_5_backup/
+data/manifest.phase1_5_backup.csv
+data/derived.phase1_5_backup/
