@@ -86,8 +86,13 @@ def build_datasets(
     cfg: RunConfig,
     *,
     lips_dir: Path | None = None,
+    drop_no_face_train: bool = False,
 ):
-    """Return (train_ds, val_ds, NormalizationStats) for cfg.modality."""
+    """Return (train_ds, val_ds, NormalizationStats) for cfg.modality.
+
+    ``drop_no_face_train`` only filters the TRAIN split (val/test stay honest).
+    Has no effect on the audio modality, which doesn't read lip masks.
+    """
     if cfg.modality == "audio":
         train_raw = AudioFeatureDataset(
             manifest_path=cfg.manifest, split="train",
@@ -107,11 +112,13 @@ def build_datasets(
     if cfg.modality == "visual":
         train_raw = VisualFeatureDataset(
             manifest_path=cfg.manifest, split="train", lips_dir=lips_dir,
+            drop_no_face=drop_no_face_train,
         )
         stats = fit_normalization_stats(train_raw, modalities=("lips",))
         train_ds = VisualFeatureDataset(
             manifest_path=cfg.manifest, split="train",
             lips_dir=lips_dir, normalization=stats,
+            drop_no_face=drop_no_face_train,
         )
         val_ds = VisualFeatureDataset(
             manifest_path=cfg.manifest, split="val",
@@ -123,12 +130,14 @@ def build_datasets(
         train_raw = FusionFeatureDataset(
             manifest_path=cfg.manifest, split="train",
             backend=cfg.backend, audio_dir=cfg.audio_dir, lips_dir=lips_dir,
+            drop_no_face=drop_no_face_train,
         )
         stats = fit_normalization_stats(train_raw, modalities=("audio", "lips"))
         train_ds = FusionFeatureDataset(
             manifest_path=cfg.manifest, split="train",
             backend=cfg.backend, audio_dir=cfg.audio_dir, lips_dir=lips_dir,
             normalization=stats,
+            drop_no_face=drop_no_face_train,
         )
         val_ds = FusionFeatureDataset(
             manifest_path=cfg.manifest, split="val",
@@ -217,11 +226,21 @@ def _val_metric_battery(
     )
 
 
-def run_training(cfg: RunConfig, *, lips_dir: Path | None = None) -> dict:
+def run_training(
+    cfg: RunConfig, *, lips_dir: Path | None = None, drop_no_face_train: bool = False,
+) -> dict:
     common.set_seed(cfg.seed)
     dev = _resolve_device(cfg.device)
 
-    train_ds, val_ds, stats = build_datasets(cfg, lips_dir=lips_dir)
+    train_ds, val_ds, stats = build_datasets(
+        cfg, lips_dir=lips_dir, drop_no_face_train=drop_no_face_train,
+    )
+    if drop_no_face_train and getattr(train_ds, "dropped_no_face_ids", []):
+        dropped = train_ds.dropped_no_face_ids
+        print(
+            f"drop_no_face: filtered {len(dropped)} NO-FACE row(s) from train; "
+            f"val/test untouched. First few: {dropped[:5]}"
+        )
     train_loader = make_dataloader(train_ds, batch_size=cfg.batch_size, shuffle=True, drop_last=True)
     val_loader = make_dataloader(val_ds, batch_size=cfg.batch_size, shuffle=False)
 
@@ -330,6 +349,9 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="Override audio feature dir (default: codec-matched store for backend).")
     p.add_argument("--lips-dir", type=Path, default=None,
                    help="Override lip feature dir (default: data/features/lips/).")
+    p.add_argument("--drop-no-face", action="store_true",
+                   help="Filter train rows whose lip mask is all zeros (no face detected). "
+                        "Applied to train only; val/test stay untouched. Visual/fusion only.")
     p.add_argument("--run-name", default=None)
     p.add_argument("--runs-dir", type=Path, default=Path("runs"))
     p.add_argument("--checkpoint-path", type=Path, default=None)
@@ -400,7 +422,7 @@ def main(argv: list[str] | None = None) -> int:
         checkpoint_path=checkpoint_path,
         max_trainable_params=defaults["max_trainable_params"],
     )
-    result = run_training(cfg, lips_dir=args.lips_dir)
+    result = run_training(cfg, lips_dir=args.lips_dir, drop_no_face_train=args.drop_no_face)
     bm = result["best_val_metrics"]
     print(
         f"run={cfg.run_name} best_epoch={result['best_epoch']} "
