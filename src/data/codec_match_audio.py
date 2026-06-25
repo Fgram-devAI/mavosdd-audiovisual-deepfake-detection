@@ -1,10 +1,21 @@
 """CLI: match audio codec footprint across bonafide and spoof rows.
 
-For bonafide rows the source WAV is round-tripped through MP3 at a codec spec
-sampled deterministically per-row from the spoof codec distribution; for spoof
-rows the MP3 is decoded straight to WAV. All outputs are 16 kHz mono PCM WAV
-keyed by sample_id, and a derived manifest is written with audio_path columns
-repointed at the new tree so the existing embedding extractors can consume it.
+Bonafide rows AND clean-WAV spoof rows (any provider listed in
+CLEAN_WAV_PROVIDERS — e.g. openai_tts whose default response_format is wav)
+are round-tripped through MP3 at a codec spec sampled deterministically
+per-row from the *native-MP3* spoof codec distribution. Native-MP3 spoof
+rows (ElevenLabs, Google) are decoded straight to WAV, preserving their
+existing codec history. All outputs are 16 kHz mono PCM WAV keyed by
+sample_id, and a derived manifest is written with audio_path columns
+repointed at the new tree so the existing embedding extractors can consume
+it.
+
+Treating clean-WAV spoof providers identically to bonafide is what keeps
+codec footprint label-independent: with bonafide round-tripped but openai
+left as clean WAV, a model could shortcut "clean WAV ⇒ openai (spoof)" —
+just the original Phase 4 leak with a different sign. Round-tripping both
+makes the codec marginal identical across the two label classes that share
+the clean-WAV starting point.
 
 Run::
 
@@ -31,14 +42,21 @@ from src import common
 logger = logging.getLogger(__name__)
 
 # Codec parameters of each TTS provider's MP3 output. These were probed from
-# the on-disk files (ffprobe) and are stable per provider. Bonafide rows are
-# randomly assigned one of these specs in proportion to the spoof row count
-# per provider, so the codec footprint becomes label-independent.
+# the on-disk files (ffprobe) and are stable per provider. Bonafide rows
+# (and clean-WAV spoof providers, see CLEAN_WAV_PROVIDERS below) are randomly
+# assigned one of these specs in proportion to the row count per *native-MP3*
+# provider, so the codec footprint becomes label-independent.
 PROVIDER_CODEC: dict[str, tuple[int, str]] = {
     "elevenlabs": (44100, "128k"),
     "google_tts": (24000, "64k"),
     "elevenlabs_sts": (44100, "128k"),
 }
+
+# Spoof providers whose output is clean WAV (no native codec history). These
+# rows need the same MP3 round-trip applied to bonafide, otherwise a model
+# could shortcut to "clean WAV → bonafide or this provider, MP3 → other
+# providers." OpenAI TTS defaults to response_format=wav and lives here.
+CLEAN_WAV_PROVIDERS: set[str] = {"openai_tts"}
 
 TARGET_SR = 16000
 
@@ -114,7 +132,11 @@ def process_row(
         return "failed"
 
     try:
-        if row.get("audio_label") == "bonafide":
+        needs_roundtrip = (
+            row.get("audio_label") == "bonafide"
+            or row.get("provider", "") in CLEAN_WAV_PROVIDERS
+        )
+        if needs_roundtrip:
             _, sr, br = codec_for_bonafide(sid, provider_weights)
             mp3_tmp = tmpdir / f"{sid}.mp3"
             encode_mp3(in_path, mp3_tmp, sr, br)
@@ -160,31 +182,60 @@ def main(argv: list[str] | None = None) -> int:
     if args.limit is not None:
         rows = rows[: args.limit]
 
-    provider_weights: dict[str, int] = {}
-    bona_count = spoof_count = 0
+    raw_provider_counts: dict[str, int] = {}
+    bona_count = spoof_count = clean_wav_spoof_count = 0
     for r in rows:
         lbl = r.get("audio_label")
         if lbl == "spoof":
             prov = r.get("provider", "")
-            provider_weights[prov] = provider_weights.get(prov, 0) + 1
+            raw_provider_counts[prov] = raw_provider_counts.get(prov, 0) + 1
             spoof_count += 1
+            if prov in CLEAN_WAV_PROVIDERS:
+                clean_wav_spoof_count += 1
         elif lbl == "bonafide":
             bona_count += 1
-    unknown = [p for p in provider_weights if p not in PROVIDER_CODEC]
+    unknown = [
+        p for p in raw_provider_counts
+        if p not in PROVIDER_CODEC and p not in CLEAN_WAV_PROVIDERS
+    ]
     if unknown:
-        raise SystemExit(f"unknown provider(s) in manifest, add to PROVIDER_CODEC: {unknown}")
+        raise SystemExit(
+            f"unknown provider(s) in manifest, add to PROVIDER_CODEC or "
+            f"CLEAN_WAV_PROVIDERS: {unknown}"
+        )
+
+    # Sampling distribution for clean-WAV rows: only the native-MP3 providers
+    # contribute weight. Clean-WAV providers (e.g. openai_tts) are excluded so
+    # the resulting bonafide/openai codec footprint matches the ElevenLabs +
+    # Google distribution.
+    provider_weights = {
+        p: w for p, w in raw_provider_counts.items() if p in PROVIDER_CODEC
+    }
 
     print(f"manifest={args.manifest} rows={len(rows)} "
-          f"bonafide={bona_count} spoof={spoof_count}")
-    print(f"spoof codec distribution: {provider_weights}")
+          f"bonafide={bona_count} spoof={spoof_count} "
+          f"(clean_wav_spoof={clean_wav_spoof_count})")
+    print(f"native-MP3 spoof codec distribution: {provider_weights}")
+    if clean_wav_spoof_count:
+        clean_providers = sorted(
+            p for p in raw_provider_counts if p in CLEAN_WAV_PROVIDERS
+        )
+        print(
+            f"clean-WAV spoof providers (will be MP3 round-tripped): "
+            f"{clean_providers}"
+        )
 
     if args.dry_run:
         plan: dict[tuple[int, str], int] = {}
         for r in rows:
-            if r.get("audio_label") == "bonafide":
+            needs_roundtrip = (
+                r.get("audio_label") == "bonafide"
+                or r.get("provider", "") in CLEAN_WAV_PROVIDERS
+            )
+            if needs_roundtrip:
                 _, sr, br = codec_for_bonafide(r["sample_id"], provider_weights)
                 plan[(sr, br)] = plan.get((sr, br), 0) + 1
-        print(f"dry-run bonafide codec plan: {plan}")
+        print(f"dry-run round-trip codec plan: {plan}")
         return 0
 
     counts = {"written": 0, "skipped": 0, "failed": 0}
