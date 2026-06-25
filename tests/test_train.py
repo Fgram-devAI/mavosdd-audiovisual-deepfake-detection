@@ -81,6 +81,53 @@ def _build_train_fixture(
     return manifest, audio_dir
 
 
+def _write_npz(dir_path: Path, source_video_id: str, *, t: int = 20, dim: int = 84,
+               signal: float = 0.0) -> None:
+    """Write a lip .npz with feats (T,84) (centered at `signal`) and mask (T,) of 1s."""
+    dir_path.mkdir(parents=True, exist_ok=True)
+    rng = np.random.RandomState(abs(hash(source_video_id)) % (2**32))
+    feats = rng.randn(t, dim).astype(np.float32) * 0.1 + signal
+    mask = np.ones(t, dtype=np.float32)
+    np.savez(dir_path / f"{source_video_id}.npz", feats=feats, mask=mask)
+
+
+def _build_visual_fixture(
+    tmp_path: Path, *, n_train: int = 8, n_val: int = 4, separable: bool = False
+) -> tuple[Path, Path]:
+    manifest = tmp_path / "visual.csv"
+    lips_dir = tmp_path / "lips"
+    rows: list[dict] = []
+    for split, n in (("train", n_train), ("val", n_val)):
+        for i in range(n):
+            label = i % 2
+            sid = f"{split}_{i}"
+            rows.append(_row(sid, split=split, provider="original", label=label))
+            sig = (label * 0.5) if separable else 0.0
+            _write_npz(lips_dir, sid, signal=sig)
+    _write_manifest(manifest, rows)
+    return manifest, lips_dir
+
+
+def _build_fusion_fixture(
+    tmp_path: Path, *, n_train: int = 8, n_val: int = 4, separable: bool = False
+) -> tuple[Path, Path, Path]:
+    manifest = tmp_path / "fusion.csv"
+    audio_dir = tmp_path / "feat_codec"
+    lips_dir = tmp_path / "lips"
+    rows: list[dict] = []
+    for split, n in (("train", n_train), ("val", n_val)):
+        for i in range(n):
+            label = i % 2
+            sid = f"{split}_{i}"
+            provider = "elevenlabs" if label == 1 else "real"
+            rows.append(_row(sid, split=split, provider=provider, label=label))
+            sig = (label * 0.5) if separable else 0.0
+            _write_npy(audio_dir, sid, signal=sig)
+            _write_npz(lips_dir, sid, signal=sig)
+    _write_manifest(manifest, rows)
+    return manifest, audio_dir, lips_dir
+
+
 class TestLateFusionAudioOnlyForward:
     def test_audio_forward_accepts_audio_only(self):
         model = LateFusionClassifier("audio")
@@ -252,6 +299,214 @@ class TestTrainHarness:
                 "--batch-size", "2",
                 "--device", "cpu",
                 "--run-name", "t",
+                "--runs-dir", str(tmp_path / "runs"),
+                "--checkpoint-path", str(tmp_path / "ckpt.pt"),
+            ])
+        assert rc == 0
+        assert "test" not in seen_splits, f"train.py built test split: {seen_splits}"
+
+    def test_build_datasets_visual_wires_visual_dataset(self, tmp_path):
+        from src.data.feature_store import VisualFeatureDataset
+        manifest, lips_dir = _build_visual_fixture(tmp_path)
+        cfg = train_mod.RunConfig(
+            modality="visual", backend="wav2vec2",
+            manifest=manifest, audio_dir=tmp_path / "unused",
+            batch_size=2, epochs=1, lr=1e-4, weight_decay=1e-2,
+            dropout=0.3, patience=2, device="cpu", seed=42,
+            run_name="t", runs_dir=tmp_path / "runs",
+            checkpoint_path=tmp_path / "ckpt.pt",
+        )
+        train_ds, val_ds, stats = train_mod.build_datasets(cfg, lips_dir=lips_dir)
+        assert isinstance(train_ds, VisualFeatureDataset)
+        assert isinstance(val_ds, VisualFeatureDataset)
+        assert stats.lips_mean is not None and stats.lips_std is not None
+        assert stats.audio_mean is None and stats.audio_std is None
+
+    def test_build_datasets_fusion_wires_fusion_dataset(self, tmp_path):
+        from src.data.feature_store import FusionFeatureDataset
+        manifest, audio_dir, lips_dir = _build_fusion_fixture(tmp_path)
+        cfg = train_mod.RunConfig(
+            modality="fusion", backend="wav2vec2",
+            manifest=manifest, audio_dir=audio_dir,
+            batch_size=2, epochs=1, lr=1e-4, weight_decay=1e-2,
+            dropout=0.3, patience=2, device="cpu", seed=42,
+            run_name="t", runs_dir=tmp_path / "runs",
+            checkpoint_path=tmp_path / "ckpt.pt",
+        )
+        train_ds, val_ds, stats = train_mod.build_datasets(cfg, lips_dir=lips_dir)
+        assert isinstance(train_ds, FusionFeatureDataset)
+        assert isinstance(val_ds, FusionFeatureDataset)
+        assert stats.audio_mean is not None and stats.audio_std is not None
+        assert stats.lips_mean is not None and stats.lips_std is not None
+
+    def test_param_budget_asserted_visual_and_fusion(self, tmp_path):
+        for modality in ("visual", "fusion"):
+            cfg = train_mod.RunConfig(
+                modality=modality, backend="wav2vec2",
+                manifest=tmp_path / "m.csv", audio_dir=tmp_path / "a",
+                batch_size=2, epochs=1, lr=1e-4, weight_decay=1e-2,
+                dropout=0.3, patience=2, device="cpu", seed=42,
+                run_name="t", runs_dir=tmp_path / "runs",
+                checkpoint_path=tmp_path / "ckpt.pt",
+            )
+            model = train_mod.build_model(cfg)
+            n = sum(p.numel() for p in model.parameters() if p.requires_grad)
+            assert n < 2_000_000, f"{modality}: {n:,}"
+
+    def test_one_step_decreases_loss_visual(self, tmp_path):
+        manifest, lips_dir = _build_visual_fixture(tmp_path, separable=True)
+        cfg = train_mod.RunConfig(
+            modality="visual", backend="wav2vec2",
+            manifest=manifest, audio_dir=tmp_path / "unused",
+            batch_size=4, epochs=1, lr=1e-2, weight_decay=0.0,
+            dropout=0.0, patience=2, device="cpu", seed=42,
+            run_name="t", runs_dir=tmp_path / "runs",
+            checkpoint_path=tmp_path / "ckpt.pt",
+        )
+        train_ds, _, _ = train_mod.build_datasets(cfg, lips_dir=lips_dir)
+        model = train_mod.build_model(cfg)
+        loader = train_mod.make_dataloader(train_ds, batch_size=cfg.batch_size,
+                                           shuffle=True, drop_last=True)
+        criterion = torch.nn.BCEWithLogitsLoss()
+        opt = torch.optim.AdamW(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
+        batch = next(iter(loader))
+        loss0 = float(criterion(
+            train_mod._forward_batch(model, batch, "visual", torch.device("cpu")),
+            batch["label"].float(),
+        ))
+        for _ in range(20):
+            opt.zero_grad()
+            logits = train_mod._forward_batch(model, batch, "visual", torch.device("cpu"))
+            loss = criterion(logits, batch["label"].float())
+            loss.backward()
+            opt.step()
+        loss1 = float(criterion(
+            train_mod._forward_batch(model, batch, "visual", torch.device("cpu")),
+            batch["label"].float(),
+        ))
+        assert loss1 < loss0
+
+    def test_one_step_decreases_loss_fusion(self, tmp_path):
+        manifest, audio_dir, lips_dir = _build_fusion_fixture(tmp_path, separable=True)
+        cfg = train_mod.RunConfig(
+            modality="fusion", backend="wav2vec2",
+            manifest=manifest, audio_dir=audio_dir,
+            batch_size=4, epochs=1, lr=1e-2, weight_decay=0.0,
+            dropout=0.0, patience=2, device="cpu", seed=42,
+            run_name="t", runs_dir=tmp_path / "runs",
+            checkpoint_path=tmp_path / "ckpt.pt",
+        )
+        train_ds, _, _ = train_mod.build_datasets(cfg, lips_dir=lips_dir)
+        model = train_mod.build_model(cfg)
+        loader = train_mod.make_dataloader(train_ds, batch_size=cfg.batch_size,
+                                           shuffle=True, drop_last=True)
+        criterion = torch.nn.BCEWithLogitsLoss()
+        opt = torch.optim.AdamW(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
+        batch = next(iter(loader))
+        loss0 = float(criterion(
+            train_mod._forward_batch(model, batch, "fusion", torch.device("cpu")),
+            batch["label"].float(),
+        ))
+        for _ in range(20):
+            opt.zero_grad()
+            logits = train_mod._forward_batch(model, batch, "fusion", torch.device("cpu"))
+            loss = criterion(logits, batch["label"].float())
+            loss.backward()
+            opt.step()
+        loss1 = float(criterion(
+            train_mod._forward_batch(model, batch, "fusion", torch.device("cpu")),
+            batch["label"].float(),
+        ))
+        assert loss1 < loss0
+
+    def test_checkpoint_roundtrip_visual(self, tmp_path):
+        manifest, lips_dir = _build_visual_fixture(tmp_path)
+        ckpt_path = tmp_path / "ckpt_visual.pt"
+        rc = train_mod.main([
+            "--modality", "visual",
+            "--manifest", str(manifest),
+            "--lips-dir", str(lips_dir),
+            "--epochs", "1", "--batch-size", "2", "--device", "cpu",
+            "--run-name", "rt-visual",
+            "--runs-dir", str(tmp_path / "runs"),
+            "--checkpoint-path", str(ckpt_path),
+        ])
+        assert rc == 0
+        ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+        assert ckpt["modality"] == "visual"
+        assert ckpt["model_hparams"]["modality"] == "visual"
+        assert "lips_mean" in ckpt["norm_stats"] and "lips_std" in ckpt["norm_stats"]
+        # visual ckpt has no audio stats
+        assert "audio_mean" not in ckpt["norm_stats"]
+        rebuild = LateFusionClassifier(
+            modality=ckpt["model_hparams"]["modality"],
+            emb=ckpt["model_hparams"]["emb"],
+            p=ckpt["model_hparams"]["dropout"],
+        )
+        rebuild.load_state_dict(ckpt["state_dict"])
+
+    def test_checkpoint_roundtrip_fusion(self, tmp_path):
+        manifest, audio_dir, lips_dir = _build_fusion_fixture(tmp_path)
+        ckpt_path = tmp_path / "ckpt_fusion.pt"
+        rc = train_mod.main([
+            "--modality", "fusion", "--backend", "wav2vec2",
+            "--manifest", str(manifest),
+            "--audio-dir", str(audio_dir),
+            "--lips-dir", str(lips_dir),
+            "--epochs", "1", "--batch-size", "2", "--device", "cpu",
+            "--run-name", "rt-fusion",
+            "--runs-dir", str(tmp_path / "runs"),
+            "--checkpoint-path", str(ckpt_path),
+        ])
+        assert rc == 0
+        ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+        assert ckpt["modality"] == "fusion"
+        assert ckpt["backend"] == "wav2vec2"
+        assert ckpt["audio_dir"] == str(audio_dir)
+        for key in ("audio_mean", "audio_std", "lips_mean", "lips_std"):
+            assert key in ckpt["norm_stats"], f"missing norm_stats[{key!r}]"
+
+    def test_train_never_builds_test_split_visual(self, tmp_path):
+        from src.data.feature_store import VisualFeatureDataset
+        manifest, lips_dir = _build_visual_fixture(tmp_path)
+        seen_splits: list[str] = []
+        real_cls = VisualFeatureDataset
+
+        def spy(*args, **kwargs):
+            seen_splits.append(kwargs.get("split"))
+            return real_cls(*args, **kwargs)
+
+        with patch.object(train_mod, "VisualFeatureDataset", side_effect=spy):
+            rc = train_mod.main([
+                "--modality", "visual",
+                "--manifest", str(manifest),
+                "--lips-dir", str(lips_dir),
+                "--epochs", "1", "--batch-size", "2", "--device", "cpu",
+                "--run-name", "nots-visual",
+                "--runs-dir", str(tmp_path / "runs"),
+                "--checkpoint-path", str(tmp_path / "ckpt.pt"),
+            ])
+        assert rc == 0
+        assert "test" not in seen_splits, f"train.py built test split: {seen_splits}"
+
+    def test_train_never_builds_test_split_fusion(self, tmp_path):
+        from src.data.feature_store import FusionFeatureDataset
+        manifest, audio_dir, lips_dir = _build_fusion_fixture(tmp_path)
+        seen_splits: list[str] = []
+        real_cls = FusionFeatureDataset
+
+        def spy(*args, **kwargs):
+            seen_splits.append(kwargs.get("split"))
+            return real_cls(*args, **kwargs)
+
+        with patch.object(train_mod, "FusionFeatureDataset", side_effect=spy):
+            rc = train_mod.main([
+                "--modality", "fusion", "--backend", "wav2vec2",
+                "--manifest", str(manifest),
+                "--audio-dir", str(audio_dir),
+                "--lips-dir", str(lips_dir),
+                "--epochs", "1", "--batch-size", "2", "--device", "cpu",
+                "--run-name", "nots-fusion",
                 "--runs-dir", str(tmp_path / "runs"),
                 "--checkpoint-path", str(tmp_path / "ckpt.pt"),
             ])
