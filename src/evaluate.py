@@ -188,7 +188,9 @@ def evaluate_checkpoint(
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(description="Evaluate an audio anti-spoof checkpoint.")
+    p = argparse.ArgumentParser(
+        description="Evaluate an audio / visual / fusion checkpoint over cached feature-store embeddings."
+    )
     p.add_argument("--checkpoint", required=True, type=Path)
     p.add_argument("--split", required=True, choices=("train", "val", "test"))
     p.add_argument("--allow-test", action="store_true",

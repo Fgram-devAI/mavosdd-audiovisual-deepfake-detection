@@ -1,4 +1,4 @@
-"""Audio anti-spoof training harness over codec-matched embeddings."""
+"""Modality-aware training harness (audio / visual / fusion) over cached feature-store embeddings."""
 from __future__ import annotations
 
 import argparse
@@ -320,7 +320,9 @@ def _runconfig_to_dict(cfg: RunConfig) -> dict:
 
 def _build_parser() -> argparse.ArgumentParser:
     defaults = _load_training_defaults()
-    p = argparse.ArgumentParser(description="Train audio anti-spoof baseline.")
+    p = argparse.ArgumentParser(
+        description="Train an audio / visual / fusion baseline over cached feature-store embeddings."
+    )
     p.add_argument("--modality", choices=("audio", "visual", "fusion"), default="audio")
     p.add_argument("--backend", choices=tuple(CODEC_DIRS.keys()), default="wav2vec2")
     p.add_argument("--manifest", type=Path, default=None)
