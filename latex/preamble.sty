@@ -1,0 +1,36 @@
+\NeedsTeXFormat{LaTeX2e}
+\ProvidesPackage{preamble}[2026/06/25 MAVOS-DD report helpers]
+
+% Greek + English language setup (polyglossia)
+\RequirePackage{polyglossia}
+\setdefaultlanguage{greek}
+\setotherlanguage{english}
+
+% Greek-friendly serif + monospace fonts (DejaVu ships with most TeX distros)
+\RequirePackage{fontspec}
+\setmainfont{DejaVu Serif}
+\setmonofont{DejaVu Sans Mono}
+
+% Visual TODO placeholder for unfilled metrics
+\RequirePackage{xcolor}
+\newcommand{\todoMetric}[1]{%
+  \textcolor{red}{\textbf{[TODO METRIC:}~\texttt{#1}\textbf{]}}%
+}
+
+% Semantic helpers for technical terms in Greek prose
+\newcommand{\codeid}[1]{\texttt{#1}}
+\newcommand{\engineName}[1]{\texttt{#1}}
+
+% Common ML acronyms (kept English even in Greek prose)
+\newcommand{\AUC}{ROC-AUC}
+\newcommand{\EER}{EER}
+
+% Tables
+\RequirePackage{booktabs}
+\RequirePackage{array}
+
+% Math
+\RequirePackage{amsmath}
+
+% Hyperref last (per convention)
+\RequirePackage[hidelinks]{hyperref}
