@@ -1,15 +1,19 @@
 \NeedsTeXFormat{LaTeX2e}
 \ProvidesPackage{preamble}[2026/06/25 MAVOS-DD report helpers]
 
+% Fontspec MUST load before polyglossia to set up fonts correctly
+\RequirePackage{fontspec}
+
+% Set fonts BEFORE polyglossia loads the language
+\defaultfontfeatures{Ligatures=TeX}
+% Try system fonts that support Greek
+\setmainfont{Helvetica Neue}
+\setmonofont{Menlo}
+
 % Greek + English language setup (polyglossia)
 \RequirePackage{polyglossia}
 \setdefaultlanguage{greek}
 \setotherlanguage{english}
-
-% Greek-friendly serif + monospace fonts (DejaVu ships with most TeX distros)
-\RequirePackage{fontspec}
-\setmainfont{DejaVu Serif}
-\setmonofont{DejaVu Sans Mono}
 
 % Visual TODO placeholder for unfilled metrics
 \RequirePackage{xcolor}
