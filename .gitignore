@@ -38,6 +38,10 @@ release/
 /CLAUDE.md
 /codex.md
 /workflow.md
+# Re-include the public project memory at repo root. The /CLAUDE.md line above
+# is there for case-insensitive filesystems where /claude.md would otherwise
+# match it; this re-include keeps the public memory file tracked.
+!/CLAUDE.md
 prompts/
 superpowers/
 docs/prompts/
