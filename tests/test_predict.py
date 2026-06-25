@@ -458,3 +458,37 @@ class TestCLI:
         assert rc == 1
         captured = capsys.readouterr()
         assert "could not read video/audio" in captured.err
+
+    def test_cli_missing_checkpoint_returns_one_no_traceback(
+        self, tmp_path, capsys, make_mp4_with_audio,
+    ):
+        # torch.load on a nonexistent path raises FileNotFoundError (OSError),
+        # which must NOT bypass main()'s handler and emit a raw traceback.
+        video = make_mp4_with_audio(duration=4.0)
+        rc = predict.main([
+            "--video", str(video),
+            "--checkpoint", str(tmp_path / "does_not_exist.pt"),
+            "--device", "cpu",
+        ])
+        assert rc == 1
+        captured = capsys.readouterr()
+        assert "Traceback" not in captured.err
+        assert captured.err.strip() != ""  # some user-facing message
+        assert captured.out.strip() == ""
+
+    def test_cli_corrupt_checkpoint_returns_one_no_traceback(
+        self, tmp_path, capsys, make_mp4_with_audio,
+    ):
+        # torch.load on a non-pickle file raises pickle.UnpicklingError,
+        # which must NOT bypass main()'s handler and emit a raw traceback.
+        video = make_mp4_with_audio(duration=4.0)
+        bad_ckpt = tmp_path / "garbage.pt"
+        bad_ckpt.write_bytes(b"this is not a valid pickle blob \x00\x00")
+        rc = predict.main([
+            "--video", str(video), "--checkpoint", str(bad_ckpt), "--device", "cpu",
+        ])
+        assert rc == 1
+        captured = capsys.readouterr()
+        assert "Traceback" not in captured.err
+        assert captured.err.strip() != ""
+        assert captured.out.strip() == ""

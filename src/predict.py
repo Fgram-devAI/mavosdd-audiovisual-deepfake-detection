@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import pickle
 import sys
 import tempfile
 from pathlib import Path
@@ -293,7 +294,7 @@ def main(argv: list[str] | None = None) -> int:
             threshold=args.threshold,
             codec_match=not args.no_codec_match,
         )
-    except (ValueError, RuntimeError) as exc:
+    except (ValueError, RuntimeError, OSError, pickle.UnpicklingError) as exc:
         print(str(exc), file=sys.stderr)
         return 1
     print(_render_json(result) if args.json else _render_human(result))
