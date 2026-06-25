@@ -200,3 +200,165 @@ class TestReconstructNormStats:
         assert out["lips_mean"].dtype == np.float32
         assert out["audio_mean"].shape == (768,)
         assert out["lips_mean"].shape == (84,)
+
+
+import torch
+from src.models.late_fusion import LateFusionClassifier
+
+
+# ---- helpers: build minimal CPU-runnable checkpoints ----
+
+def _build_checkpoint(tmp_path, modality: str, *, codec_dir: bool = True):
+    """Build a randomly-initialized LateFusionClassifier checkpoint for `modality`."""
+    model = LateFusionClassifier(modality, emb=128, p=0.3)
+    norm = {"eps": 1e-6}
+    if modality != "visual":
+        norm["audio_mean"] = np.zeros(768, dtype=np.float32)
+        norm["audio_std"] = np.ones(768, dtype=np.float32)
+    if modality != "audio":
+        norm["lips_mean"] = np.zeros(84, dtype=np.float32)
+        norm["lips_std"] = np.ones(84, dtype=np.float32)
+    audio_dir = None
+    if modality != "visual":
+        audio_dir = str(tmp_path / ("audio_wav2vec2_codec" if codec_dir else "audio_wav2vec2"))
+    ckpt = {
+        "state_dict": model.state_dict(),
+        "modality": modality,
+        "backend": "wav2vec2" if modality != "visual" else None,
+        "audio_dir": audio_dir,
+        "model_hparams": {"modality": modality, "emb": 128, "dropout": 0.3},
+        "norm_stats": norm,
+    }
+    ckpt_path = tmp_path / f"ckpt_{modality}.pt"
+    torch.save(ckpt, ckpt_path)
+    return ckpt_path
+
+
+class _StubBackend:
+    """Stand-in for audio_backends.AudioEmbeddingBackend; no HF download."""
+    def __init__(self, t: int = 199, dim: int = 768):
+        self._t, self._dim = t, dim
+    def encode(self, wave):
+        # deterministic small embedding
+        rng = np.random.RandomState(0)
+        return rng.randn(self._t, self._dim).astype(np.float32)
+
+
+@pytest.fixture
+def stub_backend_loader(monkeypatch):
+    """Patch audio_backends.load_backend at source — predict.py uses module-qualified calls,
+    so the patch is picked up via the imported audio_backends module."""
+    def _load(name, device):
+        return _StubBackend()
+    monkeypatch.setattr("src.features.audio_backends.load_backend", _load, raising=True)
+
+
+@pytest.fixture
+def stub_extract_lips(monkeypatch):
+    """Patch extract_lips.extract_one at source. Returns deterministic (20,84) feats + ones mask."""
+    def _extract_one(video_path, mesh):
+        feats = np.random.RandomState(1).randn(20, 84).astype(np.float32)
+        mask = np.ones(20, dtype=np.float32)
+        return feats, mask
+    monkeypatch.setattr("src.features.extract_lips.extract_one", _extract_one, raising=True)
+
+
+class TestPredictVideoAudio:
+    def test_audio_returns_full_result_dict(
+        self, tmp_path, make_mp4_with_audio, stub_backend_loader,
+    ):
+        # Audio modality: real ffmpeg demux is OK (cheap, ~4s of testsrc+sine)
+        video = make_mp4_with_audio(duration=4.0)
+        ckpt = _build_checkpoint(tmp_path, "audio", codec_dir=False)  # disable codec stage
+        out = predict.predict_video(video, ckpt, device="cpu")
+        for k in ("video", "checkpoint", "modality", "backend",
+                  "audio_window_s", "codec_matched",
+                  "lip_frames_present", "lip_frames_total", "face_detected",
+                  "p_spoof", "threshold", "label"):
+            assert k in out, f"missing key {k!r}"
+        assert out["modality"] == "audio"
+        assert out["backend"] == "wav2vec2"
+        assert out["audio_window_s"] == 4.0
+        assert out["codec_matched"] is False
+        assert out["lip_frames_present"] is None
+        assert out["face_detected"] is None
+        assert 0.0 <= out["p_spoof"] <= 1.0
+        assert out["label"] in {"bonafide", "spoof"}
+
+
+class TestPredictVideoVisual:
+    def test_visual_returns_full_result_dict(
+        self, tmp_path, make_mp4_with_audio, stub_extract_lips,
+    ):
+        video = make_mp4_with_audio(duration=4.0)
+        ckpt = _build_checkpoint(tmp_path, "visual")
+        out = predict.predict_video(video, ckpt, device="cpu")
+        assert out["modality"] == "visual"
+        assert out["backend"] is None
+        assert out["audio_window_s"] is None
+        assert out["codec_matched"] is None
+        assert out["lip_frames_total"] == 20
+        assert out["lip_frames_present"] == 20  # stub returns full mask
+        assert out["face_detected"] is True
+        assert 0.0 <= out["p_spoof"] <= 1.0
+
+
+class TestPredictVideoFusion:
+    def test_fusion_codec_match_runs_when_audio_dir_endswith_codec(
+        self, tmp_path, make_mp4_with_audio,
+        stub_backend_loader, stub_extract_lips,
+    ):
+        # Real ffmpeg codec round-trip; fast on 4s audio.
+        video = make_mp4_with_audio(duration=4.0)
+        ckpt = _build_checkpoint(tmp_path, "fusion", codec_dir=True)
+        out = predict.predict_video(video, ckpt, device="cpu")
+        assert out["modality"] == "fusion"
+        assert out["codec_matched"] is True
+        assert 0.0 <= out["p_spoof"] <= 1.0
+
+    def test_fusion_no_codec_match_when_audio_dir_lacks_codec(
+        self, tmp_path, make_mp4_with_audio,
+        stub_backend_loader, stub_extract_lips,
+    ):
+        video = make_mp4_with_audio(duration=4.0)
+        ckpt = _build_checkpoint(tmp_path, "fusion", codec_dir=False)
+        out = predict.predict_video(video, ckpt, device="cpu")
+        assert out["codec_matched"] is False
+
+
+class TestPredictVideoNoFace:
+    def test_visual_noface_still_scores(
+        self, tmp_path, make_mp4_4s_black_no_audio,
+    ):
+        # Real MediaPipe on the black fixture — reliably yields no landmarks.
+        video = make_mp4_4s_black_no_audio()
+        ckpt = _build_checkpoint(tmp_path, "visual")
+        out = predict.predict_video(video, ckpt, device="cpu")
+        assert out["face_detected"] is False
+        assert out["lip_frames_present"] == 0
+        assert 0.0 <= out["p_spoof"] <= 1.0
+
+
+class TestPredictVideoBadCheckpoint:
+    def test_missing_norm_stats_raises_valueerror(
+        self, tmp_path, make_mp4_with_audio,
+    ):
+        video = make_mp4_with_audio(duration=4.0)
+        ckpt_path = tmp_path / "bad.pt"
+        torch.save({"state_dict": {}, "modality": "audio",
+                    "backend": "wav2vec2",
+                    "model_hparams": {"modality": "audio", "emb": 128, "dropout": 0.3}},
+                   ckpt_path)
+        with pytest.raises(ValueError, match="norm_stats"):
+            predict.predict_video(video, ckpt_path, device="cpu")
+
+
+class TestPredictVideoCorruptMp4:
+    def test_audio_modality_wraps_ffmpeg_error(
+        self, tmp_path, make_corrupt_mp4, stub_backend_loader,
+    ):
+        # spec §7: corrupt mp4 in audio path → RuntimeError("could not read video/audio from {path}: …")
+        video = make_corrupt_mp4()
+        ckpt = _build_checkpoint(tmp_path, "audio", codec_dir=False)
+        with pytest.raises(RuntimeError, match="could not read video/audio"):
+            predict.predict_video(video, ckpt, device="cpu")

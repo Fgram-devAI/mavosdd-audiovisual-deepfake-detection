@@ -22,6 +22,12 @@ from src.data import codec_match_audio
 from src.features import audio_backends, audio_io, extract_lips
 from src.models.late_fusion import LateFusionClassifier
 
+_INFERENCE_CODEC_SR = 44100
+_INFERENCE_CODEC_BR = "128k"
+_AUDIO_SR = 16000
+_AUDIO_SECONDS = 4.0
+_LIP_FRAMES = 20
+
 
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
@@ -157,7 +163,124 @@ def predict_video(
     threshold: float = 0.5,
     codec_match: bool = True,
 ) -> dict:
-    raise NotImplementedError("predict_video pipeline arrives in later tasks")
+    video = Path(video)
+    checkpoint = Path(checkpoint)
+
+    # 4a. Resolve device + load checkpoint.
+    dev = _resolve_device(device)
+    ckpt = torch.load(checkpoint, map_location="cpu", weights_only=False)
+    _validate_checkpoint(ckpt)
+    modality = ckpt["modality"]
+    backend_name = ckpt["backend"]
+
+    if dev.type == "cpu" and modality != "visual":
+        print(
+            f"warning: running on CPU; first call also downloads the "
+            f"{backend_name} weights",
+            file=sys.stderr,
+        )
+
+    norm = _reconstruct_norm_stats(ckpt["norm_stats"])
+    codec_matched = _should_codec_match(ckpt, codec_match)
+
+    audio_tensor: torch.Tensor | None = None
+    lips_tensor: torch.Tensor | None = None
+    mask_tensor: torch.Tensor | None = None
+    lip_frames_present: int | None = None
+    face_detected: bool | None = None
+
+    with tempfile.TemporaryDirectory(prefix="predict-") as td:
+        tmpdir = Path(td)
+        # 4b. Demux audio (skip for visual).
+        if modality != "visual":
+            tmp_wav = tmpdir / "audio.wav"
+            try:
+                codec_match_audio.decode_to_wav16k(video, tmp_wav)
+            except FileNotFoundError as exc:
+                raise RuntimeError(
+                    "ffmpeg not found on PATH; install ffmpeg "
+                    "(e.g. 'brew install ffmpeg' / 'apt-get install ffmpeg')"
+                ) from exc
+            except RuntimeError as exc:
+                raise RuntimeError(
+                    f"could not read video/audio from {video}: {exc}"
+                ) from exc
+
+            # 4c. Codec-match round-trip (conditional).
+            if codec_matched:
+                tmp_mp3 = tmpdir / "audio.mp3"
+                tmp_wav_cm = tmpdir / "audio_cm.wav"
+                codec_match_audio.encode_mp3(
+                    tmp_wav, tmp_mp3, _INFERENCE_CODEC_SR, _INFERENCE_CODEC_BR,
+                )
+                codec_match_audio.decode_to_wav16k(tmp_mp3, tmp_wav_cm)
+                window_src = tmp_wav_cm
+            else:
+                window_src = tmp_wav
+
+            wave = audio_io.load_audio_window(
+                window_src, sr=_AUDIO_SR, seconds=_AUDIO_SECONDS,
+            )
+
+            # 4d. Frozen backend embedding.
+            backend = audio_backends.load_backend(backend_name, dev)
+            emb = backend.encode(wave)  # (T, 768)
+            emb = _normalize(emb, norm["audio_mean"], norm["audio_std"], norm["eps"])
+            audio_tensor = torch.from_numpy(np.asarray(emb, dtype=np.float32)) \
+                .unsqueeze(0).to(dev)
+
+        # 4e. Lip landmarks (skip for audio).
+        if modality != "audio":
+            mesh = mp.solutions.face_mesh.FaceMesh(
+                static_image_mode=True, max_num_faces=1,
+                refine_landmarks=True, min_detection_confidence=0.5,
+            )
+            try:
+                feats, mask = extract_lips.extract_one(str(video), mesh)
+            finally:
+                mesh.close()
+            feats = _normalize(feats, norm["lips_mean"], norm["lips_std"], norm["eps"])
+            lips_tensor = torch.from_numpy(np.asarray(feats, dtype=np.float32)) \
+                .unsqueeze(0).to(dev)
+            mask_tensor = torch.from_numpy(np.asarray(mask, dtype=np.float32)) \
+                .unsqueeze(0).to(dev)
+            lip_frames_present = int(mask.sum())
+            face_detected = lip_frames_present > 0
+
+    # 4g. Build the model.
+    hp = ckpt["model_hparams"]
+    model = LateFusionClassifier(
+        modality=modality, emb=hp.get("emb", 128), p=hp.get("dropout", 0.3),
+    )
+    model.load_state_dict(ckpt["state_dict"])
+    model.to(dev).eval()
+
+    # 4h. Forward → logit → prob.
+    with torch.no_grad():
+        if modality == "audio":
+            logits = model(audio_tensor)
+        elif modality == "visual":
+            logits = model(None, lips_tensor, mask_tensor)
+        else:  # fusion
+            logits = model(audio_tensor, lips_tensor, mask_tensor)
+    prob = float(torch.sigmoid(logits).cpu().item())
+
+    label = "spoof" if prob >= threshold else "bonafide"
+
+    return {
+        "video": str(video),
+        "checkpoint": checkpoint.name,
+        "modality": modality,
+        "backend": backend_name if modality != "visual" else None,
+        "audio_window_s": _AUDIO_SECONDS if modality != "visual" else None,
+        "codec_matched": codec_matched if modality != "visual" else None,
+        "lip_frames_present": lip_frames_present,
+        "lip_frames_total": _LIP_FRAMES if modality != "audio" else None,
+        "face_detected": face_detected,
+        "p_spoof": prob,
+        "threshold": float(threshold),
+        "label": label,
+    }
 
 
 def main(argv: list[str] | None = None) -> int:
