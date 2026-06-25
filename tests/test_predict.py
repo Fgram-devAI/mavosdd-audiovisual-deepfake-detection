@@ -33,3 +33,48 @@ class TestArgparse:
         assert ns.json is False
         assert ns.no_codec_match is False
         assert ns.device == "auto"
+
+
+class TestCheckpointValidator:
+    def test_missing_state_dict_raises(self):
+        ckpt = {
+            "modality": "audio", "backend": "wav2vec2",
+            "model_hparams": {"modality": "audio", "emb": 128, "dropout": 0.3},
+            "norm_stats": {"eps": 1e-6},
+        }
+        with pytest.raises(ValueError, match="state_dict"):
+            predict._validate_checkpoint(ckpt)
+
+    def test_missing_norm_stats_raises(self):
+        ckpt = {
+            "state_dict": {}, "modality": "audio", "backend": "wav2vec2",
+            "model_hparams": {"modality": "audio", "emb": 128, "dropout": 0.3},
+        }
+        with pytest.raises(ValueError, match="norm_stats"):
+            predict._validate_checkpoint(ckpt)
+
+    def test_bad_modality_raises(self):
+        ckpt = {
+            "state_dict": {}, "modality": "speech", "backend": "wav2vec2",
+            "model_hparams": {"modality": "speech", "emb": 128, "dropout": 0.3},
+            "norm_stats": {"eps": 1e-6},
+        }
+        with pytest.raises(ValueError, match="modality"):
+            predict._validate_checkpoint(ckpt)
+
+    def test_non_visual_with_none_backend_raises(self):
+        ckpt = {
+            "state_dict": {}, "modality": "audio", "backend": None,
+            "model_hparams": {"modality": "audio", "emb": 128, "dropout": 0.3},
+            "norm_stats": {"eps": 1e-6},
+        }
+        with pytest.raises(ValueError, match="backend"):
+            predict._validate_checkpoint(ckpt)
+
+    def test_visual_with_none_backend_is_ok(self):
+        ckpt = {
+            "state_dict": {}, "modality": "visual", "backend": None,
+            "model_hparams": {"modality": "visual", "emb": 128, "dropout": 0.3},
+            "norm_stats": {"eps": 1e-6, "lips_mean": [0.0] * 84, "lips_std": [1.0] * 84},
+        }
+        predict._validate_checkpoint(ckpt)  # no raise

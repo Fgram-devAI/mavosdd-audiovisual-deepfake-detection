@@ -48,6 +48,30 @@ def _build_parser() -> argparse.ArgumentParser:
     return p
 
 
+_REQUIRED_CKPT_FIELDS = ("state_dict", "modality", "backend",
+                         "model_hparams", "norm_stats")
+_ALLOWED_MODALITIES = {"audio", "visual", "fusion"}
+
+
+def _validate_checkpoint(ckpt: dict) -> None:
+    missing = [k for k in _REQUIRED_CKPT_FIELDS if k not in ckpt]
+    if missing:
+        raise ValueError(
+            f"checkpoint missing required field(s): {missing}; "
+            f"not a src/train.py checkpoint"
+        )
+    modality = ckpt["modality"]
+    if modality not in _ALLOWED_MODALITIES:
+        raise ValueError(
+            f"checkpoint modality {modality!r} not in {sorted(_ALLOWED_MODALITIES)}"
+        )
+    if modality != "visual" and ckpt["backend"] is None:
+        raise ValueError(
+            f"checkpoint modality={modality!r} requires non-None 'backend'; "
+            f"got None"
+        )
+
+
 def predict_video(
     video: str | Path,
     checkpoint: str | Path,
