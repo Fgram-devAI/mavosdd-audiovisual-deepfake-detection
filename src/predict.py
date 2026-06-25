@@ -94,6 +94,49 @@ def _normalize(
     return (x - mean) / (std + eps)
 
 
+def _resolve_device(name: str) -> torch.device:
+    if name == "auto":
+        if torch.cuda.is_available():
+            return torch.device("cuda")
+        if torch.backends.mps.is_available():
+            return torch.device("mps")
+        return torch.device("cpu")
+    return torch.device(name)
+
+
+def _json_default(obj):
+    if isinstance(obj, np.generic):
+        return obj.item()
+    if isinstance(obj, Path):
+        return str(obj)
+    raise TypeError(f"not JSON serializable: {type(obj).__name__}")
+
+
+def _render_json(result: dict) -> str:
+    return json.dumps(result, default=_json_default)
+
+
+def _render_human(result: dict) -> str:
+    modality = result["modality"]
+    parts: list[str] = [
+        f"checkpoint={result['checkpoint']}",
+        f"modality={modality}",
+    ]
+    if modality != "visual":
+        parts.append(f"backend={result['backend']}")
+        parts.append(f"audio_window={result['audio_window_s']}s")
+        parts.append(f"codec_matched={result['codec_matched']}")
+    if modality != "audio":
+        parts.append(
+            f"lip_frames_present={result['lip_frames_present']}/{result['lip_frames_total']}"
+        )
+        parts.append(f"face_detected={result['face_detected']}")
+    parts.append(f"p_spoof={result['p_spoof']:.4f}")
+    parts.append(f"label={result['label']}")
+    parts.append(f"threshold={result['threshold']}")
+    return " ".join(parts)
+
+
 def predict_video(
     video: str | Path,
     checkpoint: str | Path,

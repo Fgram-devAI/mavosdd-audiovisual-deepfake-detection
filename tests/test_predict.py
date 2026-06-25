@@ -130,3 +130,43 @@ class TestNormalize:
         out = predict._normalize(x, np.zeros(2, dtype=np.float32),
                                   np.zeros(2, dtype=np.float32), 1e-6)
         assert np.isfinite(out).all()
+
+
+class TestRenderers:
+    AUDIO_RESULT = {
+        "video": "v.mp4", "checkpoint": "best_audio_wav2vec2.pt",
+        "modality": "audio", "backend": "wav2vec2",
+        "audio_window_s": 4.0, "codec_matched": True,
+        "lip_frames_present": None, "lip_frames_total": None,
+        "face_detected": None,
+        "p_spoof": 0.0421, "threshold": 0.5, "label": "bonafide",
+    }
+    VISUAL_RESULT = {
+        "video": "v.mp4", "checkpoint": "best_visual.pt",
+        "modality": "visual", "backend": None,
+        "audio_window_s": None, "codec_matched": None,
+        "lip_frames_present": 18, "lip_frames_total": 20,
+        "face_detected": True,
+        "p_spoof": 0.71, "threshold": 0.5, "label": "spoof",
+    }
+
+    def test_json_round_trip(self):
+        s = predict._render_json(self.AUDIO_RESULT)
+        parsed = json.loads(s)
+        assert parsed == self.AUDIO_RESULT
+
+    def test_human_audio_omits_lip_fields(self):
+        s = predict._render_human(self.AUDIO_RESULT)
+        assert "lip_frames" not in s
+        assert "face_detected" not in s
+        assert "modality=audio" in s and "backend=wav2vec2" in s
+        assert "p_spoof=0.0421" in s and "label=bonafide" in s
+
+    def test_human_visual_omits_audio_fields(self):
+        s = predict._render_human(self.VISUAL_RESULT)
+        assert "backend=" not in s
+        assert "audio_window" not in s
+        assert "codec_matched" not in s
+        assert "lip_frames_present=18/20" in s
+        assert "face_detected=True" in s
+        assert "label=spoof" in s
