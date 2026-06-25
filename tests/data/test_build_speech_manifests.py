@@ -151,7 +151,16 @@ def test_parse_tts_filename_returns_none_on_bad_name():
     from src.data.build_speech_manifests import parse_tts_filename
 
     assert parse_tts_filename("no_voice.mp3") is None
-    assert parse_tts_filename("abc__voice-X.wav") is None
+    assert parse_tts_filename("no_voice.wav") is None
+    assert parse_tts_filename("missing_extension__voice-X") is None
+
+
+def test_parse_tts_filename_accepts_wav_for_openai():
+    from src.data.build_speech_manifests import parse_tts_filename
+
+    sv, voice = parse_tts_filename("abc__voice-alloy.wav")
+    assert sv == "abc"
+    assert voice == "alloy"
 
 
 def test_iter_tts_records_prefers_jsonl_when_present(tmp_path):
