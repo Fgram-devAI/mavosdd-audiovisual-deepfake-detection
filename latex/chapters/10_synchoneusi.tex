@@ -1,3 +1,370 @@
-\chapter{[Title placeholder for Chapter 10]}
+\chapter{Late Fusion και ο Concern}
+\label{chap:late-fusion-concern}
 
-\todoMetric{Chapter content pending}
+Το παρόν κεφάλαιο τεκμηριώνει την αρχιτεκτονική late fusion
+που επιλέχθηκε για αυτό το project,
+εξηγεί γιατί επιλέχθηκε concat αντί για cross-attention,
+και — το πιο σημαντικό — παρουσιάζει με ειλικρίνεια
+τι μπορεί και τι ΔΕΝ μπορεί να κάνει αυτή η αρχιτεκτονική.
+Η ειλικρίνεια αυτή δεν αποτελεί παρωδία της μεθόδου:
+αποτελεί τον πυρήνα του τι μάθαμε.
+
+% ============================================================
+\section{Αρχιτεκτονική Late Fusion}
+\label{sec:late-fusion-arch}
+% ============================================================
+
+Η \codeid{LateFusionClassifier} συνδυάζει δύο ανεξάρτητα heads —
+ένα \codeid{AudioHead} και ένα \codeid{VisualHead} —
+μέσω concatenation, και στη συνέχεια εφαρμόζει
+ένα δύο-στρωμάτων MLP για να παράγει ένα binary logit.
+
+\paragraph{AudioHead (768 → 128).}
+Λαμβάνει ως είσοδο frozen embeddings σχήματος $(B, T, 768)$
+από έναν από τους τρεις frozen speech backbones
+(Wav2Vec2, WavLM, HuBERT).
+Πρώτα εφαρμόζεται temporal mean-pool κατά τον χρονικό άξονα,
+παράγοντας ένα $(B, 768)$ διάνυσμα ανά sample.
+Στη συνέχεια εφαρμόζεται η ακόλουθη ακολουθία:
+\[
+  \text{Linear}(768 \to 256) \to \text{BatchNorm1d} \to \text{ReLU}
+  \to \text{Dropout}(0.3) \to \text{Linear}(256 \to 128) \to \text{ReLU}
+\]
+Η έξοδος είναι ένα $(B, 128)$ audio embedding.
+Περίπου 328\,000 trainable params.
+
+\paragraph{VisualHead (84 → 128).}
+Λαμβάνει ως είσοδο lip-landmark sequences σχήματος $(B, 20, 84)$
+και ένα validity mask σχήματος $(B, 20)$
+(1.0 όπου εντοπίστηκε πρόσωπο, 0.0 αλλού).
+Εφαρμόζεται ένα δύο-στρωμάτων bidirectional GRU
+(hidden=128, dropout=0.3):
+\[
+  \text{BiGRU}(84 \to 256) \to \text{mask-weighted mean-pool} \to (B, 256)
+\]
+Ακολουθεί projection:
+$\text{Linear}(256 \to 128) \to \text{ReLU} \to \text{Dropout}(0.3)$.
+Η έξοδος είναι ένα $(B, 128)$ visual embedding.
+Περίπου 340\,000 trainable params.
+
+\paragraph{Fusion (256 → 1).}
+Τα δύο embeddings $(B, 128)$ συνενώνονται:
+$\mathbf{z} = [\mathbf{a};\, \mathbf{v}] \in \mathbb{R}^{256}$.
+Εφαρμόζεται ένα δύο-στρωμάτων MLP:
+\[
+  \text{Linear}(256 \to 64) \to \text{ReLU} \to \text{Dropout}(0.3)
+  \to \text{Linear}(64 \to 1) \to \text{logit}
+\]
+Το τελικό fusion μοντέλο έχει συνολικά περίπου 700\,000 trainable params,
+πολύ εντός του ορίου των 2\,000\,000 που ορίζει το project.
+
+Ο Πίνακας~\ref{tab:param_budget_fusion} συνοψίζει τη δομή.
+
+\begin{table}[ht]
+  \centering
+  \begin{tabular}{lrl}
+    \toprule
+    Συνιστώσα & Trainable params & Είσοδος → Έξοδος \\
+    \midrule
+    \codeid{AudioHead}   & ${\approx}328\,000$ & $(B,T,768)$ → $(B,128)$ \\
+    \codeid{VisualHead}  & ${\approx}340\,000$ & $(B,20,84)$ + mask → $(B,128)$ \\
+    Fusion MLP           & ${\approx}32\,000$  & $(B,256)$ → $(B,1)$ \\
+    \midrule
+    \textbf{Σύνολο fusion} & ${\approx}700\,000$ & — \\
+    \bottomrule
+  \end{tabular}
+  \caption{Trainable parameters ανά συνιστώσα του \codeid{LateFusionClassifier}
+    (frozen backbones excluded).}
+  \label{tab:param_budget_fusion}
+\end{table}
+
+% ============================================================
+\subsection{\codeid{LateFusionClassifier} Forward Pass}
+\label{subsec:forward-pass}
+% ============================================================
+
+Ο παρακάτω ψευδοκώδικας αντικατοπτρίζει πιστά
+το \codeid{forward()} της \codeid{LateFusionClassifier}
+στο \codeid{src/models/late\_fusion.py}.
+Ανάλογα με το \codeid{modality} που επιλέχθηκε
+κατά την κατασκευή (\codeid{"audio"}, \codeid{"visual"}, \codeid{"fusion"}),
+συλλέγονται τα αντίστοιχα embeddings και συνενώνονται.
+
+\begin{english}
+\begin{verbatim}
+class LateFusionClassifier(nn.Module):
+    def __init__(self, modality="fusion", emb=128, p=0.3):
+        # AudioHead παράγεται αν modality != "visual"
+        # VisualHead παράγεται αν modality != "audio"
+        # fused = emb * 2 αν fusion, αλλιώς emb * 1
+        # classifier: Linear(fused->64)->ReLU->Dropout->Linear(64->1)
+
+    def forward(self, audio=None, lips=None, mask=None):
+        parts = []
+
+        if self.audio is not None:
+            # audio: (B, T, 768) frozen embeddings
+            # mean-pool over T, then MLP -> (B, 128)
+            parts.append(self.audio(audio.float()))
+
+        if self.visual is not None:
+            # lips: (B, 20, 84), mask: (B, 20)
+            # BiGRU -> mask-weighted pool -> proj -> (B, 128)
+            parts.append(self.visual(lips.float(), mask.float()))
+
+        # concat along last dim: (B, 128) or (B, 256)
+        # classifier MLP -> (B,) logit (squeezed)
+        return self.classifier(torch.cat(parts, dim=-1)).squeeze(-1)
+\end{verbatim}
+\end{english}
+
+Βασικές παρατηρήσεις για τον forward pass:
+
+\begin{itemize}
+  \item Και τα δύο modalities εισάγονται ως \codeid{float()}
+        ανεξαρτήτως του dtype τους στο dataloader,
+        ώστε να αποφευχθεί τυχόν half-precision mismatch.
+  \item Το mask-weighted pooling στον \codeid{VisualHead}
+        χρησιμοποιεί \codeid{clamp(min=1.0)}
+        για να αποφύγει τη διαίρεση με μηδέν σε zero-mask samples:
+        \codeid{pooled = (h * m).sum(1) / m.sum(1).clamp(min=1.0)}.
+  \item Όταν \codeid{modality="audio"}, το \codeid{self.visual} είναι \codeid{None}
+        και τα \codeid{lips} / \codeid{mask} αγνοούνται εντελώς —
+        δεν απαιτείται η παρουσία τους.
+  \item Αντίθετα, εάν \codeid{modality="fusion"} και \codeid{audio=None},
+        ρίπτεται \codeid{ValueError} —
+        το modality δηλώνει ρητά τι απαιτεί.
+\end{itemize}
+
+% ============================================================
+\section{Γιατί Concat και Όχι Cross-Attention}
+\label{sec:why-concat}
+% ============================================================
+
+Η επιλογή του concat late fusion έναντι cross-attention
+ή άλλων formulations cross-modal interaction
+είναι συνειδητή αρχιτεκτονική απόφαση.
+Οι λόγοι είναι τρεις.
+
+\paragraph{Απλότητα εντός του parameter budget.}
+Ένα cross-attention module μεταξύ ακολουθιών audio $(T_a, 768)$
+και visual $(20, 84)$ θα απαιτούσε key/query/value projections
+για αμφότερες τις αλυσίδες,
+αυξάνοντας σημαντικά τον αριθμό των trainable params
+και εισάγοντας υπερπαραμέτρους κεφαλών (number of heads, key dim).
+Το project εφαρμόζει δεσμευτικό όριο 2\,000\,000 trainable params·
+ο concat formulation τηρεί αυτό το όριο άνετα (${\approx}700\,000$).
+
+\paragraph{Ρητή αναγνώριση του περιορισμού.}
+Το concat fusion δεν μπορεί από μόνο του να ανιχνεύσει
+\emph{ασυμφωνία} μεταξύ των δύο modalities.
+Αυτό το γνωρίζαμε εξαρχής και το επιλέξαμε ρητά:
+το concat χρησιμοποιείται ως \textbf{robustness ensemble}
+(ποιο branch έχει πιο διακριτό σήμα;)
+και όχι ως consistency detector
+(αντιστοιχεί το audio σε αυτό που βλέπω στο βίντεο;).
+
+\paragraph{Cross-modal consistency ως future work.}
+Η ανίχνευση ασυμφωνίας audio-visual
+(π.χ. "lip sync score") απαιτεί αρχιτεκτονική τύπου SyncNet —
+ένα contrastive head εκπαιδευμένο ειδικά για audio-visual alignment.
+Αυτό το SyncNet-style head θα αποτελούσε επέκταση
+που απαιτεί δικό της roadmap revision
+(\codeid{feat/av-consistency-head}).
+Βρίσκεται ρητά εκτός του scope της παρούσας εργασίας.
+
+% ============================================================
+\section{Τι ΔΕΝ Μπορεί να Κάνει το Concat Fusion}
+\label{sec:concat-limitations}
+% ============================================================
+
+Ο Πίνακας~\ref{tab:concat_fusion_caps} παραθέτει συστηματικά
+τι μπορεί και τι δεν μπορεί να κάνει το concat late fusion.
+
+\begin{table}[ht]
+  \centering
+  \begin{tabular}{p{0.45\textwidth}p{0.45\textwidth}}
+    \toprule
+    Μπορεί & Δεν Μπορεί \\
+    \midrule
+    Να συνδυάσει δύο independent classifier scores &
+    Να ανιχνεύσει \emph{inconsistency} μεταξύ ήχου και βίντεο \\
+    Να κληρονομήσει το discriminative σήμα του dominant branch &
+    Να ξεχωρίσει "TTS audio με real face" από "real audio με real face"
+    μέσω της ασυμφωνίας τους \\
+    Να εκπαιδευτεί end-to-end σε ένα binary label &
+    Να χρησιμοποιήσει το ένα modality ως consistency check για το άλλο \\
+    \bottomrule
+  \end{tabular}
+  \caption{Capabilities και περιορισμοί του concat late-fusion.}
+  \label{tab:concat_fusion_caps}
+\end{table}
+
+Ο πίνακας αυτός δεν αποτελεί κατηγορία της μεθόδου:
+είναι ειλικρινής χαρτογράφηση της ικανότητάς της.
+Το concat fusion στο παρόν project λειτουργεί ως
+εξισορρόπηση δύο αυτόνομων ταξινομητών·
+οποιαδήποτε ισχυρισμός για cross-modal understanding
+θα ήταν αδικαιολόγητος από αυτή την αρχιτεκτονική.
+
+% ============================================================
+\section{Phase 5 Finding: Fusion ≈ Audio-Only}
+\label{sec:fusion-approx-audio}
+% ============================================================
+
+Τα αποτελέσματα της Phase~1–5
+(βλ. Πίνακα~\ref{tab:phase5_val})
+επιβεβαιώνουν εμπειρικά τον παραπάνω θεωρητικό περιορισμό.
+
+Για το Wav2Vec2 backend,
+το audio-only μοντέλο επιτυγχάνει val \AUC{} = 0.9508,
+ενώ το fusion μοντέλο επιτυγχάνει val \AUC{} = 0.9509 —
+αριθμητικά αδιάκριτα.
+Για τα WavLM και HuBERT,
+και τα δύο (audio-only και fusion) φτάνουν σε \AUC{} = 1.0.
+
+Η εξήγηση είναι άμεση:
+ο visual branch στην Phase~1–5 βρισκόταν σε επίπεδο τύχης
+(\AUC{} = 0.5688, confusion \codeid{tn=0/fp=150/fn=0/tp=217}).
+Ένα concat που ενώνει ένα discriminative embedding
+με ένα at-chance embedding
+παράγει ουσιαστικά το ίδιο αποτέλεσμα με το μόνο discriminative branch:
+fusion = audio.
+
+Αυτό δεν αποτελεί αποτυχία της αρχιτεκτονικής υπό τις παρούσες συνθήκες —
+αποτελεί ακριβώς αυτό που αναμένεται θεωρητικά.
+Η Phase~6+ (με LivePortrait + Sonic) θα ελέγξει
+εάν ένας λειτουργικός visual branch επιτρέπει
+στο fusion να υπερβεί το audio-only.
+
+% ============================================================
+\section{Το Concern: Τι ΟΝΤΩΣ Μαθαίνει το Audio Branch}
+\label{sec:concern}
+% ============================================================
+
+Το παρόν project δεν αρκείται στην αναφορά ενός υψηλού \AUC{}.
+Παραθέτουμε ρητά αυτό που θεωρούμε θεμελιώδη ανησυχία
+σχετικά με το τι \emph{πραγματικά} μαθαίνει το μοντέλο.
+Τρεις υποενότητες αντιμετωπίζουν αυτό το ζήτημα:
+
+% --------------------------------------------------------
+\subsection{Bonafide Pair ≠ Live-Microphone Pair}
+\label{subsec:bonafide-pair}
+% --------------------------------------------------------
+
+Για κάθε bonafide row στο manifest,
+ο ήχος και το βίντεο προέρχονται από το ίδιο YouTube \codeid{.mp4}:
+το audio track που εξήχθη είναι \emph{ακουστικά συνεπές} με το βίντεο
+(ίδιο δωμάτιο, ίδια αλυσίδα εγγραφής),
+αλλά παραμένει YouTube clip — όχι ελεγχόμενη studio εγγραφή.
+
+Αυτό σημαίνει ότι η ζεύξη bonafide (audio, video)
+δεν ελέγχει "αυτό ακριβώς το άτομο μιλάει αυτές τις λέξεις μπροστά σε αυτή την κάμερα τώρα".
+Η ζεύξη είναι \textbf{real-world coherent} —
+δηλαδή, η ίδια πηγή YouTube — αλλά δεν είναι
+ο τύπος της live-microphone συνέπειας που θα έλεγχε
+ένα SyncNet-style consistency model.
+
+Ο διαχωρισμός που εκμαθαίνει το μοντέλο είναι:
+\begin{itemize}
+  \item \textbf{Bonafide:} "real audio από YouTube clip" vs.
+  \item \textbf{Spoof:} "synthesized speech από TTS engine"
+\end{itemize}
+και όχι "αυτός ο άνθρωπος μίλησε σε αυτό το μικρόφωνο σε αυτό το βίντεο".
+Αυτή η διάκριση είναι σημαντική:
+ένα βίντεο με dubbing από ηθοποιό (real voice, real face, αλλά mismatched)
+δεν αντιμετωπίζεται από το dataset.
+
+% --------------------------------------------------------
+\subsection{Ο Audio Branch Μαθαίνει Engine Fingerprint, Όχι Speech Authenticity}
+\label{subsec:engine-fingerprint}
+% --------------------------------------------------------
+
+Η Phase~5 αποκάλυψε ότι τα WavLM και HuBERT φτάνουν
+val \AUC{} = 1.0 (βλ. Πίνακα~\ref{tab:phase5_val}).
+Αυτό δεν σημαίνει ότι το μοντέλο κατανοεί βαθιά
+την αυθεντικότητα του λόγου.
+
+Σημαίνει ότι ανιχνεύει \textbf{per-TTS-engine spectral fingerprints}:
+κάθε TTS generator (\engineName{ElevenLabs}, \engineName{Google Neural2})
+αφήνει αρτεφάκτα στο φάσμα συχνοτήτων —
+bandwidth ceilings, vocoder residuals, silence padding patterns —
+που είναι invariant στη φωνή, τον codec, και το κείμενο.
+Το audio head εκμαθαίνει αυτά τα fingerprints
+αντί για μια γενικευμένη ανίχνευση TTS.
+
+Το πρακτικό συμπέρασμα:
+εάν εμφανιστεί ένας \emph{νέος} TTS engine που το μοντέλο δεν έχει δει,
+είναι πολύ πιθανό να αποφύγει την ανίχνευση.
+Η Phase~6+ προσθέτει \engineName{OpenAI TTS} ως τρίτο engine
+για να ελεγχθεί αυτή ακριβώς η υπόθεση:
+εάν το val \AUC{} παραμείνει κοντά στο 1.0 με τρία engines,
+τα fingerprints γενικεύονται·
+εάν πέσει, η μέθοδος είναι engine-specific.
+
+% --------------------------------------------------------
+\subsection{Τι Μαθαίνει ο Visual Branch στο Phase 6+}
+\label{subsec:visual-phase6}
+% --------------------------------------------------------
+
+Στην Phase~1–5, ο visual branch καταρρέει
+στο constant predictor "πάντα spoof":
+confusion matrix \codeid{tn=0/fp=150/fn=0/tp=217}.
+Αυτό δεν οφείλεται σε ανεπάρκεια του BiGRU ή του feature descriptor,
+αλλά σε \textbf{δομικό πρόβλημα}:
+τα bonafide και TTS-spoof rows που αφορούν το ίδιο source video
+μοιράζονται byte-identical \codeid{.npz} lip features.
+Δεν υπάρχει κανένα σήμα προς εκμάθηση.
+
+Στην Phase~6+ εισάγονται LivePortrait και Sonic
+ως visual-fake sources:
+σε αυτές τις περιπτώσεις το spoof row \emph{έχει ήδη επεξεργαστεί το πρόσωπο},
+άρα τα lip features θα διαφέρουν από τα αντίστοιχα bonafide.
+Το δομικό πρόβλημα επιλύεται.
+
+Εάν ο visual branch αποκτήσει χρήσιμο σήμα,
+αναμένουμε να δούμε val \AUC{} εμφανώς πάνω από 0.5.
+\emph{Μένει να δούμε από τα Phase~6+ test scores}
+εάν ο BiGRU θα εκμαθαίνει πραγματικά χαρακτηριστικά
+lip shape/motion της ανθρώπινης άρθρωσης,
+ή θα "κλέβει" πιο φθηνά αρτεφάκτα
+(rendering noise, frame flicker, color distribution).
+\textbf{Δεν κάνουμε claim} για αυτό εδώ —
+το αφήνουμε στα δεδομένα.
+
+% ============================================================
+\section{Phase 6+ Fusion Results}
+\label{sec:phase6-fusion-results}
+% ============================================================
+
+Τα αποτελέσματα fusion για την Phase~6+
+δεν έχουν ακόμα διεξαχθεί.
+Τα παρακάτω placeholders θα συμπληρωθούν
+μετά την εκτέλεση των training runs
+και πριν από την τελική παράδοση.
+
+\paragraph{Val \AUC{} fusion (Phase 6+).}
+
+\begin{itemize}
+  \item \codeid{fusion\_wav2vec2}: \todoMetric{fusion\_wav2vec2 val AUC Phase6+}
+  \item \codeid{fusion\_wavlm}:    \todoMetric{fusion\_wavlm val AUC Phase6+}
+  \item \codeid{fusion\_hubert}:   \todoMetric{fusion\_hubert val AUC Phase6+}
+\end{itemize}
+
+\paragraph{Test \AUC{} fusion (Phase 6+ — single shot).}
+
+\begin{itemize}
+  \item \codeid{fusion\_wav2vec2}: \todoMetric{fusion\_wav2vec2 test AUC Phase6+}
+  \item \codeid{fusion\_wavlm}:    \todoMetric{fusion\_wavlm test AUC Phase6+}
+  \item \codeid{fusion\_hubert}:   \todoMetric{fusion\_hubert test AUC Phase6+}
+\end{itemize}
+
+\paragraph{Ερώτημα αξιολόγησης.}
+Το κρίσιμο ερώτημα που θα απαντηθεί από αυτά τα αποτελέσματα:
+εάν ο visual branch ξεφύγει από την κατάρρευση στο constant predictor,
+το fusion θα υπερβεί το audio-only;
+Εάν ναι, αποδεικνύεται ότι το ensemble έχει πρακτική αξία.
+Εάν \codeid{fusion} ≈ \codeid{audio} ακόμη και τότε,
+τότε το bottleneck δεν είναι τα δεδομένα αλλά η αρχιτεκτονική —
+και η κίνηση προς ένα SyncNet-style consistency head
+(\codeid{feat/av-consistency-head}) αποκτά πιο ισχυρή δικαιολόγηση.
