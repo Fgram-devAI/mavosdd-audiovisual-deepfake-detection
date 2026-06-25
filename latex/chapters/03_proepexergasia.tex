@@ -33,14 +33,6 @@
 
 Τα αρχεία \codeid{.wav} εξάγονται στον κατάλογο \codeid{data/audio\_wav/}
 διατηρώντας την ιεραρχία του \codeid{data/raw/}.
-Το script εκτελείται ως εξής:
-
-\begin{verbatim}
-python scripts/export_wav.py [--raw-dir data/raw] \
-                             [--out-dir data/audio_wav] \
-                             [--limit N] [--overwrite]
-\end{verbatim}
-
 Η εξαγωγή αυτή είναι απαραίτητη για τους extractors ενσωμάτωσης ήχου που
 χρησιμοποιούν προ-εξαγμένα \codeid{.wav} αντί να καλούν εσωτερικά το
 \codeid{ffmpeg} ανά δείγμα.
@@ -68,17 +60,6 @@ python scripts/export_wav.py [--raw-dir data/raw] \
 Επιλέχθηκαν 40 σημεία που καλύπτουν τόσο τον \emph{εξωτερικό} όσο και τον
 \emph{εσωτερικό} περίγυρο του στόματος, σύμφωνα με το ανατομικό σχήμα
 σημείων του FaceMesh.
-Στον κώδικα (\codeid{src/features/extract\_lips.py}) ορίζονται ως σύνολο:
-
-\begin{verbatim}
-LIP_IDX = sorted({
-    61, 146, 91, 181, 84, 17, 314, 405, 321, 375,
-    291, 308, 324, 318, 402, 317, 14, 87, 178, 88,
-    95, 185, 40, 39, 37, 0, 267, 269, 270, 409,
-    415, 310, 311, 312, 13, 82, 81, 42, 183, 78,
-})  # N_PTS = 40
-\end{verbatim}
-
 Αυτή η επιλογή διαφέρει σημαντικά από την προσέγγιση που χρησιμοποιούν
 ορισμένα baseline συστήματα τα οποία χρησιμοποιούν μόνο 4 σημεία
 (γωνίες στόματος + εσωτερικό επάνω/κάτω — δείκτες 61, 291, 13, 14).
@@ -236,30 +217,12 @@ val και test δεν φιλτράρονται ποτέ, ώστε να διατ
 
 \paragraph{Frozen — ποτέ fine-tuning.}
 Αυτή είναι μία \textbf{δεσμευτική απαίτηση} του project.
-Κατά τη φόρτωση κάθε backend, όλοι οι παράμετροι παγώνουν ρητά:
-
-\begin{verbatim}
-for param in model.parameters():
-    param.requires_grad_(False)
-\end{verbatim}
-
 Η εκπαίδευση αφορά αποκλειστικά τις κεφαλές (heads) ταξινόμησης —
 ποτέ τα βαθιά μοντέλα ομιλίας.
 Αυτό διατηρεί τον αριθμό εκπαιδεύσιμων παραμέτρων κάτω από το
 budget των 2 εκατομμυρίων.
 
 \paragraph{Εξαγωγή και αποθήκευση.}
-Η εξαγωγή γίνεται μέσω του CLI \codeid{src/features/extract\_audio\_embeddings.py}:
-
-\begin{verbatim}
-python -m src.features.extract_audio_embeddings \
-    --backend wav2vec2 \
-    --manifest data/derived/audio_spoof_manifest.csv \
-    [--split train|val|test] \
-    [--dtype float16] \
-    [--device auto]
-\end{verbatim}
-
 Κάθε δείγμα αποθηκεύεται ως \codeid{\{sample\_id\}.npy} στον αντίστοιχο
 κατάλογο:
 \begin{itemize}
@@ -332,19 +295,6 @@ codec-matched \codeid{.wav} (μετά από στρογγυλοποίηση MP3)
 (\codeid{src/models/late\_fusion.py}) και όχι κατά την εξαγωγή.
 
 \subsection*{Pre-flight validation}
-
-Πριν από κάθε εκπαίδευση συνιστάται η εκτέλεση του validator:
-
-\begin{verbatim}
-python -m src.data.feature_store \
-    --validate --view audio --backend wav2vec2
-
-python -m src.data.feature_store \
-    --validate --view visual
-
-python -m src.data.feature_store \
-    --validate --view fusion --backend hubert
-\end{verbatim}
 
 Ο validator αναφέρει:
 \begin{itemize}

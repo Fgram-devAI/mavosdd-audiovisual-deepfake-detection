@@ -43,20 +43,6 @@
   \label{tab:seven_runs}
 \end{table}
 
-Κάθε run εκτελείται μέσω του CLI του \codeid{src/train.py}:
-
-\begin{english}
-\begin{verbatim}
-python -m src.train --modality audio   --backend wav2vec2
-python -m src.train --modality audio   --backend wavlm
-python -m src.train --modality audio   --backend hubert
-python -m src.train --modality visual  --drop-no-face
-python -m src.train --modality fusion  --backend wav2vec2 --drop-no-face
-python -m src.train --modality fusion  --backend wavlm    --drop-no-face
-python -m src.train --modality fusion  --backend hubert   --drop-no-face
-\end{verbatim}
-\end{english}
-
 Το σημαία \codeid{--drop-no-face} εφαρμόζεται στα visual
 και fusion runs για τον λόγο που εξηγείται
 στην Ενότητα~\ref{sec:drop-no-face}.
@@ -114,15 +100,6 @@ decoupled weight decay,
 ανεξάρτητα από το πότε σταματά η εκπαίδευση.
 
 \paragraph{Param budget.}
-Κάθε μοντέλο επαληθεύεται κατά τη δημιουργία του
-ότι δεν υπερβαίνει το όριο των 2{,}000{,}000 trainable parameters:
-
-\begin{english}
-\begin{verbatim}
-assert n_params < cfg.max_trainable_params
-\end{verbatim}
-\end{english}
-
 Τα frozen backbones (Wav2Vec2, WavLM, HuBERT)
 \textbf{δεν συνυπολογίζονται} στο budget —
 ο έλεγχος αφορά μόνο τις παραμέτρους
@@ -197,18 +174,6 @@ assert n_params < cfg.max_trainable_params
 \end{itemize}
 
 \paragraph{Εγγύηση split isolation.}
-Η \codeid{fit\_normalization\_stats()} ελέγχει
-ρητά ότι το dataset έχει \codeid{split~=~"train"}:
-
-\begin{english}
-\begin{verbatim}
-if ds_split != "train":
-    raise FeatureStoreValidationError(
-        f"normalization stats must be fitted on the train split only"
-    )
-\end{verbatim}
-\end{english}
-
 Σε καμία περίπτωση δεν χρησιμοποιούνται val ή test δεδομένα
 για τον υπολογισμό των normalization statistics.
 Τα val και test datasets δέχονται τα stats του train
@@ -253,30 +218,6 @@ if ds_split != "train":
 όχι convention.
 Η εφαρμογή του φίλτρου στο val ή test θα δημιουργούσε
 optimistic bias στις μετρικές αξιολόγησης.
-
-Η υλοποίηση αυτής της δέσμευσης φαίνεται
-στη \codeid{build\_datasets()}:
-
-\begin{english}
-\begin{verbatim}
-train_ds = VisualFeatureDataset(
-    ..., drop_no_face=drop_no_face_train,
-)
-val_ds = VisualFeatureDataset(
-    ...,                              # drop_no_face απουσιάζει → False
-)
-\end{verbatim}
-\end{english}
-
-Ο αριθμός των dropped rows καταγράφεται (log) κατά την εκκίνηση
-του run, ώστε να είναι ορατό ποια samples εξαιρέθηκαν:
-
-\begin{english}
-\begin{verbatim}
-drop_no_face: filtered N NO-FACE row(s) from train;
-val/test untouched.
-\end{verbatim}
-\end{english}
 
 Τα zero-mask samples στο val/test
 \textbf{δεν αποκρύπτονται σιωπηλά} —
@@ -356,17 +297,6 @@ val/test untouched.
 αφού ολοκληρωθεί η επιλογή μοντέλου με βάση το val \AUC{}.
 Αυτό είναι \textbf{hard constraint} — η αξιολόγηση στο test
 δεν είναι convention που μπορεί να παραβλεφθεί.
-
-Η κλήση γίνεται μέσω του \codeid{src/evaluate.py}:
-
-\begin{english}
-\begin{verbatim}
-python -m src.evaluate \
-    --checkpoint models/checkpoints/best_audio_wav2vec2.pt \
-    --split test \
-    --allow-test
-\end{verbatim}
-\end{english}
 
 Η σημαία \codeid{--allow-test} είναι \textbf{ρητά απαιτούμενη}:
 χωρίς αυτήν, ο evaluator αρνείται να τρέξει στο test split.

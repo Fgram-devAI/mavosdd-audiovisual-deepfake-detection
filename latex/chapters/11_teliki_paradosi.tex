@@ -27,36 +27,11 @@
 \label{subsec:predict-interface}
 % ------------------------------------------------------------
 
-Τα ορίσματα που δέχεται η εντολή είναι:
-
-\begin{english}
-\begin{verbatim}
-python -m src.predict \
-    --video path/to/video.mp4 \
-    --checkpoint models/checkpoints/fusion_wavlm.pt \
-    [--device {auto,cuda,mps,cpu}] \
-    [--threshold FLOAT]          \  # default 0.5
-    [--json]                     \  # JSON αντί human-readable
-    [--no-codec-match]              # απενεργοποίηση MP3 round-trip
-\end{verbatim}
-\end{english}
-
 Τα υποχρεωτικά ορίσματα είναι \codeid{--video} και \codeid{--checkpoint}.
 Το \codeid{--device} ακολουθεί την ίδια λογική \codeid{auto → cuda > mps > cpu}
 με τον evaluator.
 
 \paragraph{Έξοδος human-readable.}
-Η προεπιλεγμένη έξοδος είναι μία γραμμή:
-
-\begin{english}
-\begin{verbatim}
-checkpoint=fusion_wavlm.pt modality=fusion backend=wavlm \
-audio_window=4.0s codec_matched=True \
-lip_frames_present=18/20 face_detected=True \
-p_spoof=0.9831 label=spoof threshold=0.5
-\end{verbatim}
-\end{english}
-
 \paragraph{Έξοδος JSON (\codeid{--json}).}
 Με τη σημαία \codeid{--json} εκπέμπεται ένα flat JSON dict
 με τα ίδια πεδία:
@@ -185,26 +160,8 @@ p_spoof=0.9831 label=spoof threshold=0.5
 ανά checkpoint, χρησιμοποιώντας το \codeid{src/evaluate.py}
 με τη σημαία \codeid{--allow-test}.
 
-\begin{english}
-\begin{verbatim}
-python -m src.evaluate \
-    --checkpoint models/checkpoints/<ckpt>.pt \
-    --split test \
-    --allow-test
-\end{verbatim}
-\end{english}
-
 Η σημαία \codeid{--allow-test} είναι δεσμευτική πύλη ασφαλείας,
 όχι απλή σύμβαση.
-Χωρίς αυτήν, η \codeid{evaluate\_checkpoint()} τερματίζει με:
-
-\begin{english}
-\begin{verbatim}
-SystemExit: Refusing to evaluate on test split without --allow-test.
-            Use --split val for model selection.
-\end{verbatim}
-\end{english}
-
 και επιστρέφει exit code 2.
 Η επιλογή μοντέλου γίνεται αποκλειστικά βάσει \codeid{--split val}·
 το test split ξεκλειδώνεται μόνο για τον τελικό consolidated pass

@@ -90,34 +90,6 @@ $\mathbf{z} = [\mathbf{a};\, \mathbf{v}] \in \mathbb{R}^{256}$.
 κατά την κατασκευή (\codeid{"audio"}, \codeid{"visual"}, \codeid{"fusion"}),
 συλλέγονται τα αντίστοιχα embeddings και συνενώνονται.
 
-\begin{english}
-\begin{verbatim}
-class LateFusionClassifier(nn.Module):
-    def __init__(self, modality="fusion", emb=128, p=0.3):
-        # AudioHead παράγεται αν modality != "visual"
-        # VisualHead παράγεται αν modality != "audio"
-        # fused = emb * 2 αν fusion, αλλιώς emb * 1
-        # classifier: Linear(fused->64)->ReLU->Dropout->Linear(64->1)
-
-    def forward(self, audio=None, lips=None, mask=None):
-        parts = []
-
-        if self.audio is not None:
-            # audio: (B, T, 768) frozen embeddings
-            # mean-pool over T, then MLP -> (B, 128)
-            parts.append(self.audio(audio.float()))
-
-        if self.visual is not None:
-            # lips: (B, 20, 84), mask: (B, 20)
-            # BiGRU -> mask-weighted pool -> proj -> (B, 128)
-            parts.append(self.visual(lips.float(), mask.float()))
-
-        # concat along last dim: (B, 128) or (B, 256)
-        # classifier MLP -> (B,) logit (squeezed)
-        return self.classifier(torch.cat(parts, dim=-1)).squeeze(-1)
-\end{verbatim}
-\end{english}
-
 Βασικές παρατηρήσεις για τον forward pass:
 
 \begin{itemize}

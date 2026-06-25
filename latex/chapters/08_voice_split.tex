@@ -110,14 +110,6 @@
 \label{subsec:determinism}
 % ------------------------------------------------------------
 
-Η ανάθεση είναι \textbf{πλήρως ντετερμινιστική} υπό σταθερό seed:
-
-\begin{english}
-\begin{verbatim}
-rng = random.Random(f"{seed}|{prov}")
-\end{verbatim}
-\end{english}
-
 Κάθε provider παίρνει το δικό του \codeid{rng} instance,
 αρχικοποιημένο με τον συνδυασμό \codeid{seed|provider\_name}.
 Αυτό εξασφαλίζει ότι η προσθήκη νέου provider
@@ -208,17 +200,6 @@ rng = random.Random(f"{seed}|{prov}")
 
 Το \codeid{apply\_voice\_split.py} καλείται δύο φορές:
 μία για το visual manifest και μία για το fusion manifest.
-Η τυπική κλήση είναι:
-
-\begin{english}
-\begin{verbatim}
-python -m src.data.apply_voice_split \
-    --source data/derived/audio_spoof_manifest_voice_split.csv \
-    --target data/derived/visual_speech_manifest.csv \
-    --out    data/derived/visual_speech_manifest_voice_split.csv
-\end{verbatim}
-\end{english}
-
 Το αποτέλεσμα είναι τρία voice-disjoint manifests —
 audio, visual, και fusion —
 που χρησιμοποιούν ακριβώς την ίδια split ανάθεση

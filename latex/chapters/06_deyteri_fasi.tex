@@ -186,15 +186,6 @@ fusion μοντέλου ανέρχεται σε \textbf{περίπου 700\,000}
   \label{tab:param-budget}
 \end{table}
 
-Ο έλεγχος παραμέτρων επιβάλλεται \emph{programmatically}
-στη \codeid{build\_model()} του \codeid{src/train.py}:
-\begin{english}
-\begin{verbatim}
-assert n_params < cfg.max_trainable_params, (
-    f"param budget exceeded: {n_params:,} >= {cfg.max_trainable_params:,}"
-)
-\end{verbatim}
-\end{english}
 Η εκπαίδευση αποτυγχάνει ρητά αν αυτό το assert παραβιαστεί.
 
 Τα υπόλοιπα βασικά hyperparameters εκπαίδευσης προέρχονται

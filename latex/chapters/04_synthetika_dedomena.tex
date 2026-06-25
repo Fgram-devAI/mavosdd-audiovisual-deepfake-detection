@@ -68,18 +68,6 @@ recall στα τελικά αποτελέσματα.
 Σημαντική λεπτομέρεια υλοποίησης: το πεδίο \codeid{model} στο Google
 STT V2 API απαιτεί μη κενή τιμή — αντίθετα με το V1 που δέχεται
 κενό string.
-Για αυτό, η παράμετρος \codeid{--model latest\_long} περνιέται ρητά:
-
-\begin{verbatim}
-python scripts/transcribe_google_stt_v2.py \
-    --wav-dir data/audio_wav \
-    --out-dir data/transcripts/google_stt_v2 \
-    --model latest_long \
-    --language-code en-US \
-    [--source-folder real] \
-    [--limit N] [--overwrite]
-\end{verbatim}
-
 Η μεταγραφή εκτελείται \textbf{αποκλειστικά σε real-source WAV αρχεία}
 (source folder \codeid{real}), δεδομένου ότι στόχος είναι η δημιουργία
 TTS spoof από transcript πραγματικής ανθρώπινης ομιλίας.
@@ -236,13 +224,7 @@ OpenAI, το per-provider recall για \engineName{OpenAI TTS-1} αποκαλύ
 
 \paragraph{Pool φωνών.}
 Χρησιμοποιήθηκαν \textbf{6 φωνές} (alloy, echo, fable, onyx, nova,
-shimmer) σε round-robin:
-
-\begin{verbatim}
-DEFAULT_OPENAI_VOICES = [
-    "alloy", "echo", "fable", "onyx", "nova", "shimmer",
-]
-\end{verbatim}
+shimmer) σε round-robin.
 
 \paragraph{Αρχείο manifest.}
 Τα αποτελέσματα αποθηκεύονται στο
@@ -297,35 +279,11 @@ XTTS-v2 σε round-robin, με native WAV 24\,kHz έξοδο.
 \subsection*{Provider Registration}
 % ------------------------------------------------------------
 
-Κάθε TTS μηχανή καταχωρείται ρητά στον builder μέσω δύο dictionaries:
-
-\begin{verbatim}
-PROVIDER_DIR = {
-    "elevenlabs":    "elevenlabs",
-    "google_tts":    "google_tts",
-    "elevenlabs_sts":"elevenlabs_sts",
-    "openai_tts":    "openai_tts",
-}
-
-PROVIDER_JSONL = {
-    "elevenlabs":    "manifest.jsonl",
-    "google_tts":    "google_tts_manifest.jsonl",
-    "elevenlabs_sts":"sts_manifest.jsonl",
-    "openai_tts":    "openai_tts_manifest.jsonl",
-}
-\end{verbatim}
-
 Η καταχώρηση του \codeid{openai\_tts} provider (PR~\#15) ήταν αναγκαία
 επέκταση: αρχικά ο builder υποστήριζε μόνο τους providers
 \codeid{elevenlabs} και \codeid{google\_tts}.
 Παράλληλα, ο filename parser (\codeid{\_FILENAME\_RE}) επεκτάθηκε
-για να αποδέχεται \codeid{.wav} extensions επιπλέον του \codeid{.mp3}:
-
-\begin{verbatim}
-_FILENAME_RE = re.compile(
-    r"^(?P<sv>.+)__voice-(?P<voice>.+)\.(?:mp3|wav)$"
-)
-\end{verbatim}
+για να αποδέχεται \codeid{.wav} extensions επιπλέον του \codeid{.mp3}.
 
 Χωρίς αυτή την αλλαγή, τα OpenAI WAV αρχεία θα αγνοούνταν εντελώς
 από τον filesystem scanner.
@@ -336,11 +294,7 @@ _FILENAME_RE = re.compile(
 
 Η συνάρτηση \codeid{iter\_generated\_rows()} κατασκευάζει μία γραμμή
 spoof ανά TTS record.
-Κάθε γραμμή \textbf{κληρονομεί το split από το source video}:
-
-\begin{verbatim}
-split = split_map.get(source_video_id)
-\end{verbatim}
+Κάθε γραμμή \textbf{κληρονομεί το split από το source video}.
 
 Αν ένα source video ανήκει στο train split, τότε \emph{όλα} τα
 TTS-παραγόμενα δείγματα από αυτό το video ανατίθενται αυτόματα

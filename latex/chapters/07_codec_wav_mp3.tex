@@ -99,18 +99,6 @@
 αναπαραγωγιμότητα μεταξύ εκτελέσεων —
 η ανάθεση codec σε κάθε \codeid{sample\_id} δεν αλλάζει ποτέ.
 
-Το \codeid{PROVIDER\_CODEC} map ορίζει τα codec specs των native-MP3 providers:
-
-\begin{english}
-\begin{verbatim}
-PROVIDER_CODEC: dict[str, tuple[int, str]] = {
-    "elevenlabs":     (44100, "128k"),
-    "google_tts":     (24000, "64k"),
-    "elevenlabs_sts": (44100, "128k"),
-}
-\end{verbatim}
-\end{english}
-
 Τα specs αυτά προέκυψαν από \codeid{ffprobe} ανάλυση των on-disk αρχείων
 και είναι σταθερά ανά provider.
 
@@ -192,43 +180,12 @@ PROVIDER_CODEC: dict[str, tuple[int, str]] = {
 \label{subsec:clean-wav-providers}
 % ------------------------------------------------------------
 
-Η λύση υλοποιείται μέσω του set \codeid{CLEAN\_WAV\_PROVIDERS}:
-
-\begin{english}
-\begin{verbatim}
-CLEAN_WAV_PROVIDERS: set[str] = {"openai_tts"}
-\end{verbatim}
-\end{english}
-
 Κάθε spoof εγγραφή της οποίας ο provider ανήκει στο
 \codeid{CLEAN\_WAV\_PROVIDERS} υποβάλλεται στο \textbf{ίδιο MP3 round-trip}
 με τις bonafide εγγραφές.
-Η \codeid{process\_row()} ελέγχει ρητά και τις δύο συνθήκες:
-
-\begin{english}
-\begin{verbatim}
-needs_roundtrip = (
-    row.get("audio_label") == "bonafide"
-    or row.get("provider", "") in CLEAN_WAV_PROVIDERS
-)
-\end{verbatim}
-\end{english}
-
 Κρίσιμη λεπτομέρεια: το sampling distribution για το codec spec
 \textbf{περιορίζεται αποκλειστικά στα native-MP3 providers}
 (εκείνους που ανήκουν στο \codeid{PROVIDER\_CODEC}).
-Τα clean-WAV spoof providers (π.χ.\ \codeid{openai\_tts}) εξαιρούνται
-από το provider weighting:
-
-\begin{english}
-\begin{verbatim}
-provider_weights = {
-    p: w for p, w in raw_provider_counts.items()
-    if p in PROVIDER_CODEC
-}
-\end{verbatim}
-\end{english}
-
 Αυτό εξασφαλίζει ότι το marginal codec footprint
 για τα bonafide και τα OpenAI rows
 ταυτίζεται με την κατανομή των native-MP3 providers
@@ -245,17 +202,6 @@ provider_weights = {
 
 Η εκτέλεση του \codeid{codec\_match\_audio} στο Phase~6+ manifest
 (4\,149 bonafide + 2\,218 spoof, συνολικά 6\,367 εγγραφές)
-παρήγαγε τα εξής diagnostics:
-
-\begin{english}
-\begin{verbatim}
-rows=6367 bonafide=4149 spoof=2218 (clean_wav_spoof=1047)
-native-MP3 spoof codec distribution: {elevenlabs: 673, google_tts: 498}
-round-trip plan: 2978 × (44100, 128k) + 2218 × (24000, 64k)
-total round-tripped = 5196 = 4149 bonafide + 1047 openai_tts
-\end{verbatim}
-\end{english}
-
 Τα νούμερα αυτά επιβεβαιώνουν τη λογική:
 
 \begin{itemize}
