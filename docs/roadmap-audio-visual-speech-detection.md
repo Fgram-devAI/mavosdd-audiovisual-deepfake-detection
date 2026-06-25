@@ -354,7 +354,50 @@ Allowed lightweight visual cue:
 - Keep Wav2Vec2 frozen.
 - Train only from cached `.npy`/`.npz` features.
 - Keep seed 42.
-- Keep existing video splits frozen.
+- Existing video splits frozen **per cap regime** (see Revision 1 below).
 - Generated audio inherits source-video split.
 - Keep trainable parameters under 2M.
 - Do not commit generated audio, transcripts, features, checkpoints, or raw data.
+
+## Revision 1 — Dataset Expansion (Phase 6+ scope)
+
+Phases 1–5 (audio anti-spoof + visual + fusion baselines, PRs #7/#8/#9) were
+trained on the original 1,000-video cap: `real=500, echomimic=250, memo=250`.
+Those splits are frozen for that cap and remain valid for retrospective
+comparison.
+
+Starting from Phase 6, the cap is expanded to **~4,149 videos** across
+**five** MAVOS-DD source folders:
+
+```
+real:         2500
+echomimic:     600
+memo:          400
+liveportrait:  314   # new fake source
+sonic:         335   # new fake source
+```
+
+Rationale: the Phase 5 visual baseline saturates at chance (val ROC-AUC
+≈ 0.57) because every video contributes a paired bonafide/spoof row that
+shares the same lip sequence — the visual head sees identical input under
+two labels and cannot discriminate. Adding `liveportrait` and `sonic`
+diversifies the fake-video sources and gives the visual/fusion heads a
+broader generator distribution to learn from. The larger bonafide pool
+(2,500 vs 500) also stress-tests recording-condition shortcuts.
+
+Implications:
+
+- `src/common.CAPS` and `LABEL_MAP` are updated accordingly. `liveportrait`
+  and `sonic` map to `1` (fake) under the existing real-vs-fake binary
+  scheme.
+- `src/data/download_subset.py` is idempotent: re-running it after a CAPS
+  change rebuilds per-class counts from the manifest and only fetches the
+  missing delta.
+- Splits will be **re-frozen at the new cap** before Phase 6 training.
+  Phase 1–5 checkpoints stay tied to the old cap's splits; the Phase 6
+  consolidated test pass uses the new cap's locked test split.
+- The 4.0 s window, 5 fps lip sampling, codec-matched audio re-extraction,
+  and voice-disjoint split remain unchanged.
+
+This revision was made explicit per the project rule that the cap may only
+be raised through a documented roadmap change.
