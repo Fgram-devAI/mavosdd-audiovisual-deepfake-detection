@@ -30,6 +30,8 @@ AUDIO_SPOOF_MANIFEST_CODEC_MATCHED = DERIVED_DIR / "audio_spoof_manifest_codec_m
 AUDIO_SPOOF_MANIFEST_VOICE_SPLIT = DERIVED_DIR / "audio_spoof_manifest_voice_split.csv"
 VISUAL_SPEECH_MANIFEST = DERIVED_DIR / "visual_speech_manifest.csv"
 FUSION_SPEECH_MANIFEST = DERIVED_DIR / "fusion_speech_manifest.csv"
+VISUAL_SPEECH_MANIFEST_VOICE_SPLIT = DERIVED_DIR / "visual_speech_manifest_voice_split.csv"
+FUSION_SPEECH_MANIFEST_VOICE_SPLIT = DERIVED_DIR / "fusion_speech_manifest_voice_split.csv"
 AUDIO_WAV_CODEC_MATCHED_DIR = DATA_ROOT / "audio_wav_codec_matched"
 
 CAPS = {"real": 500, "echomimic": 250, "memo": 250}

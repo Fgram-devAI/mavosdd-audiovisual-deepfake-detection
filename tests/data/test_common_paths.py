@@ -35,3 +35,12 @@ def test_codec_matched_backend_feature_dirs_under_data_features():
     assert common.FEAT_AUDIO_WAV2VEC2_CODEC_DIR == common.DATA_ROOT / "features" / "audio_wav2vec2_codec"
     assert common.FEAT_AUDIO_WAVLM_CODEC_DIR == common.DATA_ROOT / "features" / "audio_wavlm_codec"
     assert common.FEAT_AUDIO_HUBERT_CODEC_DIR == common.DATA_ROOT / "features" / "audio_hubert_codec"
+
+
+def test_voice_split_visual_and_fusion_paths_under_derived():
+    assert common.VISUAL_SPEECH_MANIFEST_VOICE_SPLIT == (
+        common.DERIVED_DIR / "visual_speech_manifest_voice_split.csv"
+    )
+    assert common.FUSION_SPEECH_MANIFEST_VOICE_SPLIT == (
+        common.DERIVED_DIR / "fusion_speech_manifest_voice_split.csv"
+    )
