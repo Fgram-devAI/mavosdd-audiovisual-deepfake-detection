@@ -148,15 +148,17 @@ PROVIDER_DIR: dict[str, str] = {
     "elevenlabs": "elevenlabs",
     "google_tts": "google_tts",
     "elevenlabs_sts": "elevenlabs_sts",
+    "openai_tts": "openai_tts",
 }
 
 PROVIDER_JSONL: dict[str, str] = {
     "elevenlabs": "manifest.jsonl",
     "google_tts": "google_tts_manifest.jsonl",
     "elevenlabs_sts": "sts_manifest.jsonl",
+    "openai_tts": "openai_tts_manifest.jsonl",
 }
 
-_FILENAME_RE = re.compile(r"^(?P<sv>.+)__voice-(?P<voice>.+)\.mp3$")
+_FILENAME_RE = re.compile(r"^(?P<sv>.+)__voice-(?P<voice>.+)\.(?:mp3|wav)$")
 
 
 def parse_tts_filename(name: str) -> tuple[str, str] | None:
@@ -185,18 +187,18 @@ def _scan_provider_dir(provider: str, provider_dir: Path) -> list[dict]:
     found: list[dict] = []
     if not provider_dir.exists():
         return found
-    for mp3 in provider_dir.rglob("*.mp3"):
-        parsed = parse_tts_filename(mp3.name)
+    for audio_path in sorted(p for p in provider_dir.rglob("*") if p.suffix.lower() in {".mp3", ".wav"}):
+        parsed = parse_tts_filename(audio_path.name)
         if parsed is None:
-            logger.warning("unparseable tts filename: %s", mp3)
+            logger.warning("unparseable tts filename: %s", audio_path)
             continue
         sv, voice = parsed
-        source_folder = mp3.parent.name if mp3.parent != provider_dir else ""
+        source_folder = audio_path.parent.name if audio_path.parent != provider_dir else ""
         found.append({
             "provider": provider,
             "source_video_id": sv,
             "voice": voice,
-            "synthetic_audio_path": str(mp3),
+            "synthetic_audio_path": str(audio_path),
             "source_folder": source_folder,
         })
     return found
@@ -610,7 +612,7 @@ def validate_manifests(
 
 
 def _default_providers(include_sts: bool) -> list[str]:
-    providers = ["elevenlabs", "google_tts"]
+    providers = ["elevenlabs", "google_tts", "openai_tts"]
     if include_sts:
         providers.append("elevenlabs_sts")
     return providers
