@@ -158,6 +158,16 @@ class TestLateFusionAudioOnlyForward:
         logits = model(None, torch.randn(4, 20, 84), torch.ones(4, 20))
         assert logits.shape == (4,)
 
+    def test_audio_forward_rejects_none_audio(self):
+        model = LateFusionClassifier("audio")
+        with pytest.raises(ValueError, match="audio"):
+            model(None)
+
+    def test_fusion_forward_rejects_none_audio(self):
+        model = LateFusionClassifier("fusion")
+        with pytest.raises(ValueError, match="audio"):
+            model(None, torch.randn(4, 20, 84), torch.ones(4, 20))
+
 
 # ---------- Task 5: src/train.py harness ----------
 
