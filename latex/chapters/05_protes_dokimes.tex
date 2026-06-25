@@ -1,3 +1,280 @@
-\chapter{[Title placeholder for Chapter 5]}
+\chapter{Πρώτες Δοκιμές}
+\label{chap:protes-dokimes}
 
-\todoMetric{Chapter content pending}
+Το παρόν κεφάλαιο καταγράφει το πρώτο πειραματικό βήμα του project:
+την εκπαίδευση ενός απλού convolutional δικτύου πάνω σε
+log-power mel-spectrograms (mel-CNN baseline), την παρατηρηθείσα ανωμαλία
+στα αποτελέσματα, και τη διαγνωστική ανάλυση που οδήγησε στον εντοπισμό
+δύο σοβαρών confounders — τον codec footprint leak και την εμπλοκή φωνών
+μεταξύ splits.
+Η ανάλυση αυτή καθόρισε τη στρατηγική για τη συνέχεια (Phase~5+).
+
+% ============================================================
+\section{Στόχος του Baseline}
+\label{sec:mel-baseline-goal}
+% ============================================================
+
+Πριν επενδυθεί χρόνος στα πολυπλοκότερα frozen audio backbones
+(Wav2Vec2, WavLM, HuBERT) ή στην ανάπτυξη του multimodal pipeline,
+ήταν απαραίτητο ένα \emph{γρήγορο smoke-test}: μπορεί ένα απλό μοντέλο,
+που λαμβάνει ως είσοδο μόνο ηχητικά χαρακτηριστικά χαμηλού κόστους,
+να διακρίνει bonafide από TTS-παραγόμενη ομιλία;
+
+Για τον σκοπό αυτό επιλέχθηκε ένα 2D Convolutional Neural Network (CNN)
+πάνω σε log-power mel-spectrograms — μία κλασική προσέγγιση στο πεδίο
+του audio anti-spoofing.
+Το mel-spectrogram είναι ένας συνοπτικός χρονο-συχνοτικός χάρτης
+της ηχητικής ενέργειας, αποτελεσματικός για ανίχνευση διαφορών codec
+και vocoder που αφήνουν χαρακτηριστικά ίχνη στο φάσμα.
+
+Κριτήρια επιτυχίας του baseline:
+\begin{itemize}
+  \item Το μοντέλο να εκπαιδευτεί χωρίς σφάλματα και να συγκλίνει.
+  \item Η val ROC-AUC να είναι αξιολογήσιμη (ούτε NaN ούτε αδόκιμη).
+  \item Τα αποτελέσματα να παρέχουν διαγνωστική πληροφορία για το
+        επόμενο βήμα σχεδίασης.
+\end{itemize}
+
+Κρίσιμη δέσμευση σε αυτή τη φάση: το \textbf{test split δεν αγγίχτηκε}.
+Όλη η αξιολόγηση βασίζεται αποκλειστικά σε train και val δεδομένα.
+
+% ============================================================
+\section{Αρχιτεκτονική mel-CNN}
+\label{sec:mel-cnn-arch}
+% ============================================================
+
+% ------------------------------------------------------------
+\subsection{Εξαγωγή χαρακτηριστικών}
+\label{subsec:mel-extraction}
+% ------------------------------------------------------------
+
+Η εξαγωγή mel-spectrograms υλοποιείται στο \codeid{src/features/extract\_mel.py}
+μέσω της κλάσης \codeid{MelExtractor}.
+Κάθε δείγμα ήχου φορτώνεται μέσω \codeid{src/features/audio\_io.py}
+(deterministic 4{,}0~s παράθυρο στα 16~kHz mono),
+στη συνέχεια περνάει από
+\codeid{torchaudio.transforms.MelSpectrogram} και \codeid{AmplitudeToDB},
+και αποθηκεύεται ως \codeid{.npy} αρχείο σχήματος \((n\_\text{mels},\ T)\).
+
+Οι παράμετροι εξαγωγής προέρχονται από το \codeid{config/default.yaml}:
+\begin{itemize}
+  \item \codeid{sample\_rate}: 16\,000~Hz
+  \item \codeid{n\_fft}: 400, \codeid{win\_length}: 400, \codeid{hop\_length}: 160
+  \item \codeid{n\_mels}: 64
+  \item \codeid{seconds}: 4{,}0
+\end{itemize}
+
+Με αυτές τις παραμέτρους, κάθε δείγμα παράγει ένα spectrogram
+\((64,\ 401)\) — 64 mel bins και 401 χρονικά frames.
+Τα \codeid{.npy} αρχεία αποθηκεύονται στον κατάλογο
+\codeid{data/features/audio\_mel/}, ένα ανά \codeid{sample\_id}.
+Το raw WAV \textbf{δεν} εισέρχεται ποτέ στον training loop — μόνο τα
+προεξαγμένα \codeid{.npy} features.
+
+% ------------------------------------------------------------
+\subsection{Αρχιτεκτονική δικτύου}
+\label{subsec:mel-cnn-model}
+% ------------------------------------------------------------
+
+Το \codeid{MelCNN} είναι ένα compact 1-channel 2D CNN με τέσσερα
+blocks \codeid{Conv2d → BatchNorm2d → ReLU → MaxPool2d},
+με κανάλια (16, 32, 64, 128), ακολουθούμενα από
+\codeid{AdaptiveAvgPool2d(1)} → flatten → \codeid{Dropout(0.3)} →
+\codeid{Linear(128 → 1)} logit.
+
+Το σύνολο των εκπαιδεύσιμων παραμέτρων ανέρχεται σε \textbf{97\,521},
+εντός του project budget των 2\,000\,000 παραμέτρων.
+
+% ------------------------------------------------------------
+\subsection{Normalization και training}
+\label{subsec:mel-training}
+% ------------------------------------------------------------
+
+Τα normalization statistics (mean/std ανά mel bin) υπολογίστηκαν
+\textbf{αποκλειστικά από το train split} μέσω της \codeid{fit\_mel\_norm\_stats}.
+Τα val δεδομένα χρησιμοποιήθηκαν μόνο για αξιολόγηση — ποτέ για
+υπολογισμό στατιστικών.
+
+Hyperparameters εκπαίδευσης από \codeid{config/default.yaml}:
+\begin{itemize}
+  \item Optimizer: AdamW, \codeid{lr}=1e-4, \codeid{weight\_decay}=1e-2
+  \item Loss: \codeid{BCEWithLogitsLoss}
+  \item \codeid{batch\_size}: 32, \codeid{max\_epochs}: 50
+  \item Early stop: patience 7 εποχές βάσει val ROC-AUC
+  \item Seed: 42
+\end{itemize}
+
+Το τελικό checkpoint (\codeid{models/checkpoints/best\_mel\_cnn.pt})
+αποθηκεύει αυτοπεριγραφικά τα weights, τη mel config, τα normalization
+statistics και τα val metrics, ώστε η ανακατασκευή του να μην απαιτεί
+επαναρύθμιση.
+
+% ============================================================
+\section{Τα Πρώτα Αποτελέσματα ήταν Ύποπτα}
+\label{sec:results-suspicious}
+% ============================================================
+
+Το μοντέλο εκπαιδεύτηκε με early stopping και σταμάτησε στην
+\textbf{εποχή 17} (patience εξαντλήθηκε μετά από 7 εποχές χωρίς βελτίωση).
+Οι επιδόσεις στο val split:
+
+\begin{center}
+\begin{tabular}{lr}
+\hline
+Μετρική & Τιμή \\
+\hline
+Val ROC-AUC & 1{,}0000 \\
+Val EER & 0{,}0000 \\
+Val F1 (@ EER threshold) & 1{,}0000 \\
+Val Precision & 1{,}0000 \\
+Val Recall & 1{,}0000 \\
+\hline
+\end{tabular}
+\end{center}
+
+Η val ROC-AUC έφτασε 1{,}0 ήδη από την εποχή 10.
+Η per-provider recall ήταν επίσης 1{,}0 και για τους δύο TTS providers
+(\engineName{ElevenLabs}, \engineName{Google~TTS}), καθώς και για τις
+bonafide (\codeid{original}) εγγραφές.
+
+Αυτά τα αποτελέσματα \textbf{δεν ερμηνεύθηκαν ως θρίαμβος} —
+αντίθετα, ερμηνεύθηκαν ως \emph{διαγνωστικό συναγερμό}.
+
+Ένα compact CNN των 97\,521 παραμέτρων, εκπαιδευμένο για μόλις 17 εποχές
+σε dataset 1\,518 δειγμάτων, δεν αναμενόταν να φτάσει σε τέλεια διαχωρισμό.
+Η μόνη εξήγηση ήταν ότι το μοντέλο \textbf{δεν έμαθε deepfake detection} —
+έμαθε να αναγνωρίζει έναν πολύ πιο εύκολο διαχωρισμό που ήταν
+λανθάνοντα ενσωματωμένος στα δεδομένα.
+
+% ============================================================
+\section{Δύο Confounders που Αποκαλύφθηκαν}
+\label{sec:confounders}
+% ============================================================
+
+Η έρευνα που ακολούθησε εντόπισε δύο ανεξάρτητους confounders
+που μπορούσαν να εξηγήσουν την τέλεια val ROC-AUC.
+
+% ------------------------------------------------------------
+\subsection{Codec Footprint Leak}
+\label{subsec:codec-leak}
+% ------------------------------------------------------------
+
+Ο πρώτος — και σοβαρότερος — confounder ήταν πλήρης συσχέτιση
+μορφότυπου αρχείου με ετικέτα κλάσης:
+
+\begin{itemize}
+  \item \textbf{Bonafide} δείγματα: αποθηκευμένα ως clean 16~kHz PCM WAV —
+        χωρίς lossy compression.
+  \item \textbf{TTS spoof} δείγματα: παραδοτέα ως lossy MP3
+        (\engineName{ElevenLabs}: 44{,}1~kHz / 128~kbps·
+         \engineName{Google~TTS}: 24~kHz / 64~kbps).
+\end{itemize}
+
+Αυτή η 100\% συσχέτιση \codeid{format ↔ label} σημαίνει ότι
+\textbf{οποιοδήποτε μοντέλο που δέχεται mel-spectrograms ως είσοδο
+μπορεί να λειτουργήσει ως codec detector} αντί για deepfake detector.
+Τα lossy MP3 artifacts — bandwidth ceiling, quantization noise,
+aliasing στις υψηλές συχνότητες — είναι ορατά στο mel-spectrogram και
+διαφέρουν δραματικά από το clean WAV bonafide.
+
+Το mel-CNN δεν χρειάστηκε να μάθει τίποτα σχετικό με την αυθεντικότητα
+ομιλίας: αρκούσε να ανιχνεύει codec footprint.
+Αυτός ο shortcut εξηγεί πλήρως την τέλεια val ROC-AUC.
+
+% ------------------------------------------------------------
+\subsection{Voice Straddling Splits}
+\label{subsec:voice-straddling}
+% ------------------------------------------------------------
+
+Ο δεύτερος confounder εντοπίστηκε στη δομή των splits.
+Ακόμη και αν ο codec leak επιδιορθωνόταν, η ίδια TTS φωνή
+(π.χ. ένα συγκεκριμένο \codeid{voice\_id} του \engineName{ElevenLabs})
+μπορούσε να εμφανίζεται ταυτόχρονα σε train, val και test.
+
+Αυτό σημαίνει ότι το μοντέλο μπορούσε να μάθει \emph{φωνο-ειδικά}
+χαρακτηριστικά στο train και να τα αναγνωρίσει στο val —
+όχι γιατί κατανοεί τη διαδικασία TTS-σύνθεσης,
+αλλά γιατί \textbf{έχει ακούσει αυτή τη φωνή κατά την εκπαίδευση}.
+
+Αυτό το πρόβλημα είναι γνωστό ως \emph{voice straddling across splits}
+και αποτελεί ένα βασικό σφάλμα στον σχεδιασμό συνόλων δεδομένων
+αντι-spoofing: το evaluation protocol πρέπει να εξασφαλίζει ότι κάθε
+\codeid{(provider, voice\_id)} βρίσκεται αποκλειστικά σε ένα split.
+
+% ============================================================
+\section{Συμπεράσματα από τη Διάγνωση}
+\label{sec:phase4-diagnosis}
+% ============================================================
+
+Τα δύο αυτά ευρήματα κατέστησαν σαφές ότι τα αποτελέσματα του
+mel-CNN baseline \textbf{δεν έχουν διαγνωστική αξία για deepfake detection}:
+αντικατοπτρίζουν codec identification και πιθανή φωνο-αναγνώριση,
+όχι ανίχνευση συνθετικής ομιλίας.
+
+Καθορίστηκαν τρία διορθωτικά βήματα για τη συνέχεια:
+
+\paragraph{1. Codec matching.}
+Κάθε bonafide WAV περνάει μέσω ενός τυχαία επιλεγμένου MP3
+round-trip (κωδικοποίηση σε MP3 → αποκωδικοποίηση πίσω σε 16~kHz mono WAV),
+χρησιμοποιώντας specs που δειγματοληπτούνται από την κατανομή των
+TTS-spoof αρχείων.
+Έτσι το codec history καθίσταται ανεξάρτητο από την ετικέτα.
+Τα TTS spoofs που παράγονται εγγενώς ως clean WAV
+(π.χ. \engineName{OpenAI~TTS}) υπόκεινται επίσης στο ίδιο round-trip,
+ώστε να μην ανατρέψουν τον διαχωρισμό σε αντίθετη κατεύθυνση.
+
+\paragraph{2. Voice-disjoint split assignment.}
+Κάθε \codeid{(provider, voice\_id)} τοποθετείται αποκλειστικά σε ένα split.
+Η απόφαση split ταξιδεύει από το audio manifest στα visual και fusion
+manifests μέσω \codeid{src/data/apply\_voice\_split.py},
+ώστε όλες οι views να συμφωνούν πλήρως.
+
+\paragraph{3. Anti-leakage audit ως υποχρεωτικό βήμα pipeline.}
+Η εμπειρία από τον mel-CNN baseline αξιοποιήθηκε για να κωδικοποιηθεί
+ένα εκτεταμένο anti-leakage audit ως τυπικό βήμα του pipeline,
+που εκτελείται πριν από κάθε εκπαίδευση μέσω
+\codeid{python -m src.data.feature\_store --validate}.
+
+% ============================================================
+\section{Από raw mel σε Frozen Embeddings}
+\label{sec:mel-to-embeddings}
+% ============================================================
+
+Παράλληλα με τη διόρθωση των confounders, αναθεωρήθηκε και η αρχιτεκτονική
+επιλογή: η μετάβαση από raw mel-spectrograms σε \emph{frozen pretrained embeddings}.
+
+Η λογική της αλλαγής στηρίζεται σε τρεις λόγους:
+
+\begin{enumerate}
+  \item \textbf{Κατώτατο param budget.}
+        Τα mel-CNN features είναι time-frequency textures·
+        για την εκμάθησή τους απαιτείται αρκετά βαθύ CNN.
+        Αντίθετα, οι frozen embeddings Wav2Vec2 / WavLM / HuBERT
+        περιγράφουν ήδη πλούσιες φωνητικές αναπαραστάσεις
+        σε 768-d διανύσματα ανά χρονικό frame.
+        Ένας απλός MLP head \((768 \to 256 \to 128)\) αρκεί,
+        διατηρώντας τον αριθμό εκπαιδεύσιμων παραμέτρων χαμηλό.
+
+  \item \textbf{Αναπαραγωγιμότητα.}
+        Τα frozen backbones παράγουν ντετερμινιστικά τα ίδια embeddings
+        κάθε φορά.
+        Η εξαγωγή γίνεται \emph{μία φορά} και αποθηκεύεται ως \codeid{.npy}·
+        η εκπαίδευση διαβάζει πάντα από αυτά τα αρχεία,
+        χωρίς ποτέ να αγγίζει το raw audio στον training loop.
+
+  \item \textbf{Transfer από μεγαλύτερα pretrained μοντέλα.}
+        Τα \codeid{facebook/wav2vec2-base-960h},
+        \codeid{microsoft/wavlm-base} και
+        \codeid{facebook/hubert-base-ls960} έχουν εκπαιδευτεί
+        σε εκατοντάδες έως χιλιάδες ώρες ομιλίας.
+        Η γνώση αυτή μεταφέρεται δωρεάν στο task μας —
+        χωρίς fine-tuning, χωρίς κίνδυνο catastrophic forgetting,
+        και με το πλήρες ιστορικό pretraining να παραμένει αμετάβλητο.
+\end{enumerate}
+
+Τα backbones παραμένουν \textbf{πλήρως παγωμένα} (frozen) καθ' όλη τη
+διάρκεια της εκπαίδευσης.
+Ο αριθμός εκπαιδεύσιμων παραμέτρων για το audio head περιορίζεται
+σε \todoMetric{περίπου 328\,000} — κατά πολύ κάτω του project budget.
+Ο ίδιος αρχιτεκτονικός περιορισμός (frozen backbone + ελαφριά head)
+εφαρμόζεται και στους υπόλοιπους modalities (visual BiGRU, fusion MLP).
