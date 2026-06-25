@@ -72,6 +72,28 @@ def _validate_checkpoint(ckpt: dict) -> None:
         )
 
 
+def _should_codec_match(ckpt: dict, codec_match_flag: bool) -> bool:
+    if ckpt.get("modality") == "visual":
+        return False
+    if not codec_match_flag:
+        return False
+    audio_dir = ckpt.get("audio_dir")
+    if audio_dir is None:
+        return False
+    return Path(audio_dir).name.endswith("_codec")
+
+
+def _normalize(
+    x: np.ndarray,
+    mean: np.ndarray | None,
+    std: np.ndarray | None,
+    eps: float,
+) -> np.ndarray:
+    if mean is None or std is None:
+        return x
+    return (x - mean) / (std + eps)
+
+
 def predict_video(
     video: str | Path,
     checkpoint: str | Path,
