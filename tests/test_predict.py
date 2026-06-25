@@ -170,3 +170,33 @@ class TestRenderers:
         assert "lip_frames_present=18/20" in s
         assert "face_detected=True" in s
         assert "label=spoof" in s
+
+
+class TestReconstructNormStats:
+    def test_audio_only(self):
+        d = {
+            "audio_mean": np.ones(768, dtype=np.float32),
+            "audio_std": np.full(768, 2.0, dtype=np.float32),
+            "eps": 1e-5,
+        }
+        out = predict._reconstruct_norm_stats(d)
+        assert out["eps"] == 1e-5
+        assert out["audio_mean"].shape == (768,) and out["audio_std"].shape == (768,)
+        assert out["lips_mean"] is None and out["lips_std"] is None
+
+    def test_eps_defaults_to_1e6(self):
+        out = predict._reconstruct_norm_stats({})
+        assert out["eps"] == 1e-6
+        assert out["audio_mean"] is None and out["lips_mean"] is None
+
+    def test_fusion_has_both(self):
+        d = {
+            "audio_mean": [0.0] * 768, "audio_std": [1.0] * 768,
+            "lips_mean": [0.0] * 84, "lips_std": [1.0] * 84,
+            "eps": 1e-6,
+        }
+        out = predict._reconstruct_norm_stats(d)
+        assert out["audio_mean"].dtype == np.float32
+        assert out["lips_mean"].dtype == np.float32
+        assert out["audio_mean"].shape == (768,)
+        assert out["lips_mean"].shape == (84,)

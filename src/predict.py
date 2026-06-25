@@ -137,6 +137,18 @@ def _render_human(result: dict) -> str:
     return " ".join(parts)
 
 
+def _reconstruct_norm_stats(norm_stats_dict: dict) -> dict:
+    def _as_f32(v):
+        return np.asarray(v, dtype=np.float32) if v is not None else None
+    return {
+        "audio_mean": _as_f32(norm_stats_dict.get("audio_mean")),
+        "audio_std": _as_f32(norm_stats_dict.get("audio_std")),
+        "lips_mean": _as_f32(norm_stats_dict.get("lips_mean")),
+        "lips_std": _as_f32(norm_stats_dict.get("lips_std")),
+        "eps": float(norm_stats_dict.get("eps", 1e-6)),
+    }
+
+
 def predict_video(
     video: str | Path,
     checkpoint: str | Path,
