@@ -55,6 +55,24 @@ def make_mp4_without_audio(ffmpeg_available, tmp_path: Path):
 
 
 @pytest.fixture
+def make_mp4_4s_black_no_audio(ffmpeg_available, tmp_path: Path):
+    """4 s of pure black frames with a silent audio track — drives NO-FACE in MediaPipe."""
+    def _make(name: str = "black_4s.mp4") -> Path:
+        out = tmp_path / name
+        _run_ffmpeg(
+            [
+                "-f", "lavfi", "-i", "color=color=black:size=64x64:rate=10:duration=4",
+                "-f", "lavfi", "-i", "anullsrc=channel_layout=mono:sample_rate=16000:duration=4",
+                "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                "-c:a", "aac", "-shortest",
+                str(out),
+            ]
+        )
+        return out
+    return _make
+
+
+@pytest.fixture
 def make_corrupt_mp4(tmp_path: Path):
     def _make(name: str = "corrupt.mp4") -> Path:
         out = tmp_path / name
