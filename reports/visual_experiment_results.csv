@@ -1,0 +1,5 @@
+experiment,model,accuracy,f1,roc_auc
+standard_split,Logistic Regression,0.9966666666666667,0.9966555183946488,1.0
+standard_split,MLP,0.9966666666666667,0.9966555183946488,1.0
+standard_split,LSTM,1.0,1.0,1.0
+standard_split,Lip Features + Random Forest,0.9885496183206107,0.9900332225913622,0.9991964285714285

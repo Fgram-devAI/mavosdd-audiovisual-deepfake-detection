@@ -1,0 +1,5 @@
+experiment,model,accuracy,f1,roc_auc
+train_echomimic_test_memo,Logistic Regression,0.9986666666666667,0.9979959919839679,1.0
+train_echomimic_test_memo,MLP,0.9973333333333333,0.9959839357429718,0.9992160000000001
+train_memo_test_echomimic,Logistic Regression,1.0,1.0,1.0
+train_memo_test_echomimic,MLP,0.9986666666666667,0.9979959919839679,1.0
