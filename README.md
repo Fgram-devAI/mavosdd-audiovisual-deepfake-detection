@@ -473,4 +473,67 @@ held-out engine) or **leave-one-engine-out** across ≥3 generators, per
 the ASVspoof literature. This is recorded as a stated limitation rather
 than escalated to a new branch.
 
+## Train The Visual & Fusion Baselines
+
+Built on top of the same voice-disjoint split as the audio baseline. The
+visual/fusion manifests start with the source-video split, so a one-time
+remap aligns them to the audio voice-split before training:
+
+```bash
+python -m src.data.apply_voice_split \
+  --target data/derived/visual_speech_manifest.csv \
+  --out    data/derived/visual_speech_manifest_voice_split.csv
+python -m src.data.apply_voice_split \
+  --target data/derived/fusion_speech_manifest.csv \
+  --out    data/derived/fusion_speech_manifest_voice_split.csv
+```
+
+Train (validation-only model selection; the test split is never read):
+
+```bash
+python -m src.train --modality visual --run-name visual_bigru
+python -m src.train --modality fusion --backend wav2vec2 --run-name fusion_wav2vec2_codec
+# optional fusion ablations
+python -m src.train --modality fusion --backend wavlm  --run-name fusion_wavlm_codec
+python -m src.train --modality fusion --backend hubert --run-name fusion_hubert_codec
+```
+
+Evaluate on val (test is refused unless `--allow-test`):
+
+```bash
+python -m src.evaluate --checkpoint models/checkpoints/best_visual.pt          --split val
+python -m src.evaluate --checkpoint models/checkpoints/best_fusion_wav2vec2.pt --split val
+```
+
+Honest in-distribution val ROC-AUC on the **voice-disjoint** split:
+
+| Modality | wav2vec2 | wavlm | hubert |
+|----------|----------|-------|--------|
+| audio                  | 0.9508 (EER 0.106) | 1.0000 (EER 0.006) | 1.0000 (EER 0.000) |
+| fusion (audio ⊕ lips)  | 0.9509 (EER 0.107) | 1.0000 (EER 0.000) | 1.0000 (EER 0.000) |
+| visual (lips only)     | 0.5688 (EER 0.433) | — | — |
+
+The full per-checkpoint metric battery (roc_auc, eer, eer_threshold, f1,
+precision, recall, confusion, per_provider_recall) is committed at
+`reports/val_eval/all_checkpoints_val_metrics.json`.
+
+### Known Limitations — Visual Collapse And Concat-Fusion Inheritance
+
+**Visual-only collapses to a constant predictor.** Val confusion
+`tn=0/fp=150/fn=0/tp=217` means the BiGRU labels *every* row as spoof.
+ROC-AUC 0.57 confirms the underlying scores barely separate the classes
+at any threshold. The structural cause: every video contributes a paired
+bonafide row and one or more matched spoof rows, all sharing the same
+`source_video_id` and therefore the **same `.npz` lip features**. A model
+asked to discriminate between two rows whose input is byte-identical
+cannot do better than class-frequency bias.
+
+**Late fusion by concat ≈ audio-only.** Fusion wav2vec2 0.9509 vs audio
+wav2vec2 0.9508 — statistically indistinguishable. Concat fusion can't
+carry cross-modal interaction when one stream is at chance; it just
+inherits the dominant stream. The signal that *would* help is
+**audio-visual consistency** (does the mouth motion match the audio?) —
+a SyncNet-style lip-sync head. That requires a roadmap revision and is
+explicitly deferred.
+
 See `docs/workflow.md` for the phase-based implementation guide.

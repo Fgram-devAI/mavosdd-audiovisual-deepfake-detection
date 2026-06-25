@@ -1,7 +1,14 @@
 """Resume state: counts + done_ids from manifest, quarantined_ids from quarantine_log."""
 import csv
 
+from src.common import CAPS
 from src.data.download_subset import load_existing_state
+
+
+def _zeroed_counts(**overrides: int) -> dict[str, int]:
+    base = {k: 0 for k in CAPS}
+    base.update(overrides)
+    return base
 
 
 def _seed_manifest(path, rows):
@@ -25,7 +32,7 @@ def _seed_quarantine(path, rows):
 
 def test_empty_state_when_no_csvs(redirect_data_root):
     counts, done, quarantined = load_existing_state()
-    assert counts == {"real": 0, "echomimic": 0, "memo": 0}
+    assert counts == _zeroed_counts()
     assert done == set()
     assert quarantined == set()
 
@@ -37,7 +44,7 @@ def test_counts_from_manifest_rows(redirect_data_root):
         ("c", "data/raw/memo/c.mp4", "memo", 1, 4.0, 25.0, 100),
     ])
     counts, done, quarantined = load_existing_state()
-    assert counts == {"real": 2, "echomimic": 0, "memo": 1}
+    assert counts == _zeroed_counts(real=2, memo=1)
     assert done == {"a", "b", "c"}
     assert quarantined == set()
 
@@ -48,7 +55,7 @@ def test_quarantined_ids_from_log(redirect_data_root):
         ("y", "memo", "no_audio_stream"),
     ])
     counts, done, quarantined = load_existing_state()
-    assert counts == {"real": 0, "echomimic": 0, "memo": 0}
+    assert counts == _zeroed_counts()
     assert done == set()
     assert quarantined == {"x", "y"}
 
@@ -61,6 +68,6 @@ def test_done_and_quarantined_coexist(redirect_data_root):
         ("b", "real", "no_audio_stream"),
     ])
     counts, done, quarantined = load_existing_state()
-    assert counts == {"real": 1, "echomimic": 0, "memo": 0}
+    assert counts == _zeroed_counts(real=1)
     assert done == {"a"}
     assert quarantined == {"b"}

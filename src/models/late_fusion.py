@@ -63,12 +63,16 @@ class LateFusionClassifier(nn.Module):
 
     def forward(
         self,
-        audio: torch.Tensor,
+        audio: torch.Tensor | None = None,
         lips: torch.Tensor | None = None,
         mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
         parts = []
         if self.audio is not None:
+            if audio is None:
+                raise ValueError(
+                    f"modality={self.modality!r} requires 'audio'"
+                )
             parts.append(self.audio(audio.float()))
         if self.visual is not None:
             if lips is None or mask is None:

@@ -1,4 +1,10 @@
-"""Fetch MAVOS-DD english/{real,echomimic,memo}, stop at 1,000 videos."""
+"""Fetch MAVOS-DD english/{real,echomimic,memo,liveportrait,sonic}.
+
+Per-class caps live in `src.common.CAPS`. Re-running this script after a CAPS
+change is safe: `load_existing_state` rebuilds per-class counts from the
+manifest and the downloader only fetches whatever is still missing up to the
+new caps (no duplicate downloads).
+"""
 from __future__ import annotations
 
 import argparse

@@ -212,3 +212,122 @@ class TestEvaluateCLI:
             "--device", "cpu",
         ])
         assert rc == 0
+
+
+# ---------- Task: visual + fusion checkpoint paths ----------
+
+def _write_npz(dir_path: Path, source_video_id: str, *, t: int = 20, dim: int = 84) -> None:
+    dir_path.mkdir(parents=True, exist_ok=True)
+    feats = np.random.RandomState(abs(hash(source_video_id)) % (2**32)) \
+        .randn(t, dim).astype(np.float32)
+    mask = np.ones(t, dtype=np.float32)
+    np.savez(dir_path / f"{source_video_id}.npz", feats=feats, mask=mask)
+
+
+def _build_visual_eval_fixture(tmp_path: Path, n_per_split: int = 4) -> tuple[Path, Path, Path]:
+    manifest = tmp_path / "visual.csv"
+    lips_dir = tmp_path / "lips"
+    ckpt_path = tmp_path / "ckpt_visual.pt"
+
+    rows = []
+    for i in range(n_per_split):
+        for split in ("val", "test"):
+            sid = f"{split}_{i}"
+            provider = "elevenlabs" if i % 2 == 0 else "google_tts"
+            label = i % 2
+            rows.append(_row(sid, split=split, provider=provider, label=label))
+            _write_npz(lips_dir, sid)
+    _write_manifest(manifest, rows)
+
+    model = LateFusionClassifier("visual", emb=128, p=0.3)
+    ckpt = {
+        "state_dict": model.state_dict(),
+        "modality": "visual",
+        "backend": None,
+        "audio_dir": None,
+        "model_hparams": {"modality": "visual", "emb": 128, "dropout": 0.3},
+        "norm_stats": {
+            "lips_mean": np.zeros(84, dtype=np.float32),
+            "lips_std": np.ones(84, dtype=np.float32),
+            "eps": 1e-6,
+        },
+        "val_metrics": {},
+        "seed": 42,
+        "manifest": str(manifest),
+    }
+    torch.save(ckpt, ckpt_path)
+    return manifest, lips_dir, ckpt_path
+
+
+def _build_fusion_eval_fixture(tmp_path: Path, n_per_split: int = 4) -> tuple[Path, Path, Path, Path]:
+    manifest = tmp_path / "fusion.csv"
+    audio_dir = tmp_path / "feat_codec"
+    lips_dir = tmp_path / "lips"
+    ckpt_path = tmp_path / "ckpt_fusion.pt"
+
+    rows = []
+    for i in range(n_per_split):
+        for split in ("val", "test"):
+            sid = f"{split}_{i}"
+            provider = "elevenlabs" if i % 2 == 0 else "google_tts"
+            label = i % 2
+            rows.append(_row(sid, split=split, provider=provider, label=label))
+            _write_npy(audio_dir, sid)
+            _write_npz(lips_dir, sid)
+    _write_manifest(manifest, rows)
+
+    model = LateFusionClassifier("fusion", emb=128, p=0.3)
+    ckpt = {
+        "state_dict": model.state_dict(),
+        "modality": "fusion",
+        "backend": "wav2vec2",
+        "audio_dir": str(audio_dir),
+        "model_hparams": {"modality": "fusion", "emb": 128, "dropout": 0.3},
+        "norm_stats": {
+            "audio_mean": np.zeros(768, dtype=np.float32),
+            "audio_std": np.ones(768, dtype=np.float32),
+            "lips_mean": np.zeros(84, dtype=np.float32),
+            "lips_std": np.ones(84, dtype=np.float32),
+            "eps": 1e-6,
+        },
+        "val_metrics": {},
+        "seed": 42,
+        "manifest": str(manifest),
+    }
+    torch.save(ckpt, ckpt_path)
+    return manifest, audio_dir, lips_dir, ckpt_path
+
+
+class TestEvaluateCheckpointVisual:
+    def test_visual_refuses_test_without_flag(self, tmp_path):
+        _, _, ckpt = _build_visual_eval_fixture(tmp_path)
+        with pytest.raises(SystemExit):
+            evaluate.evaluate_checkpoint(ckpt, split="test")
+
+    def test_visual_allows_test_with_flag(self, tmp_path):
+        _, lips_dir, ckpt = _build_visual_eval_fixture(tmp_path)
+        out = evaluate.evaluate_checkpoint(
+            ckpt, split="test", allow_test=True, device="cpu", lips_dir=lips_dir,
+        )
+        assert "roc_auc" in out and out["n"] > 0
+
+    def test_visual_val_works_without_flag(self, tmp_path):
+        _, lips_dir, ckpt = _build_visual_eval_fixture(tmp_path)
+        out = evaluate.evaluate_checkpoint(
+            ckpt, split="val", device="cpu", lips_dir=lips_dir,
+        )
+        assert "roc_auc" in out
+
+
+class TestEvaluateCheckpointFusion:
+    def test_fusion_refuses_test_without_flag(self, tmp_path):
+        _, _, _, ckpt = _build_fusion_eval_fixture(tmp_path)
+        with pytest.raises(SystemExit):
+            evaluate.evaluate_checkpoint(ckpt, split="test")
+
+    def test_fusion_allows_test_with_flag(self, tmp_path):
+        _, _, lips_dir, ckpt = _build_fusion_eval_fixture(tmp_path)
+        out = evaluate.evaluate_checkpoint(
+            ckpt, split="test", allow_test=True, device="cpu", lips_dir=lips_dir,
+        )
+        assert "roc_auc" in out and out["n"] > 0

@@ -1,0 +1,198 @@
+{
+  "best_audio_hubert": {
+    "modality": "audio",
+    "backend": "hubert",
+    "manifest": "data/derived/audio_spoof_manifest_voice_split.csv",
+    "audio_dir": "data/features/audio_hubert_codec",
+    "val_metrics": {
+      "n": 367,
+      "roc_auc": 1.0,
+      "eer": 0.0,
+      "eer_threshold": 0.6474577784538269,
+      "threshold": 0.5,
+      "f1": 0.9954128440366973,
+      "precision": 0.9908675799086758,
+      "recall": 1.0,
+      "confusion": {
+        "tn": 148,
+        "fp": 2,
+        "fn": 0,
+        "tp": 217
+      },
+      "per_provider_recall": {
+        "elevenlabs": 1.0,
+        "google_tts": 1.0
+      }
+    }
+  },
+  "best_audio_wav2vec2": {
+    "modality": "audio",
+    "backend": "wav2vec2",
+    "manifest": "data/derived/audio_spoof_manifest_voice_split.csv",
+    "audio_dir": "data/features/audio_wav2vec2_codec",
+    "val_metrics": {
+      "n": 367,
+      "roc_auc": 0.9508141321044546,
+      "eer": 0.10632872503840246,
+      "eer_threshold": 0.6915110945701599,
+      "threshold": 0.5,
+      "f1": 0.9103448275862069,
+      "precision": 0.908256880733945,
+      "recall": 0.9124423963133641,
+      "confusion": {
+        "tn": 130,
+        "fp": 20,
+        "fn": 19,
+        "tp": 198
+      },
+      "per_provider_recall": {
+        "elevenlabs": 0.8504672897196262,
+        "google_tts": 0.9727272727272728
+      }
+    }
+  },
+  "best_audio_wavlm": {
+    "modality": "audio",
+    "backend": "wavlm",
+    "manifest": "data/derived/audio_spoof_manifest_voice_split.csv",
+    "audio_dir": "data/features/audio_wavlm_codec",
+    "val_metrics": {
+      "n": 367,
+      "roc_auc": 0.9999692780337941,
+      "eer": 0.005637480798771112,
+      "eer_threshold": 0.8779155015945435,
+      "threshold": 0.5,
+      "f1": 0.9954128440366973,
+      "precision": 0.9908675799086758,
+      "recall": 1.0,
+      "confusion": {
+        "tn": 148,
+        "fp": 2,
+        "fn": 0,
+        "tp": 217
+      },
+      "per_provider_recall": {
+        "elevenlabs": 1.0,
+        "google_tts": 1.0
+      }
+    }
+  },
+  "best_fusion_hubert": {
+    "modality": "fusion",
+    "backend": "hubert",
+    "manifest": "data/derived/fusion_speech_manifest_voice_split.csv",
+    "audio_dir": "data/features/audio_hubert_codec",
+    "val_metrics": {
+      "n": 367,
+      "roc_auc": 1.0,
+      "eer": 0.0,
+      "eer_threshold": 0.5077333450317383,
+      "threshold": 0.5,
+      "f1": 1.0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "confusion": {
+        "tn": 150,
+        "fp": 0,
+        "fn": 0,
+        "tp": 217
+      },
+      "per_provider_recall": {
+        "elevenlabs": 1.0,
+        "google_tts": 1.0
+      }
+    }
+  },
+  "best_fusion_wav2vec2": {
+    "modality": "fusion",
+    "backend": "wav2vec2",
+    "manifest": "data/derived/fusion_speech_manifest_voice_split.csv",
+    "audio_dir": "data/features/audio_wav2vec2_codec",
+    "val_metrics": {
+      "n": 367,
+      "roc_auc": 0.9509062980030721,
+      "eer": 0.10735791090629801,
+      "eer_threshold": 0.6954291462898254,
+      "threshold": 0.5,
+      "f1": 0.9147982062780269,
+      "precision": 0.8908296943231441,
+      "recall": 0.9400921658986175,
+      "confusion": {
+        "tn": 125,
+        "fp": 25,
+        "fn": 13,
+        "tp": 204
+      },
+      "per_provider_recall": {
+        "elevenlabs": 0.897196261682243,
+        "google_tts": 0.9818181818181818
+      }
+    }
+  },
+  "best_fusion_wavlm": {
+    "modality": "fusion",
+    "backend": "wavlm",
+    "manifest": "data/derived/fusion_speech_manifest_voice_split.csv",
+    "audio_dir": "data/features/audio_wavlm_codec",
+    "val_metrics": {
+      "n": 367,
+      "roc_auc": 1.0,
+      "eer": 0.0,
+      "eer_threshold": 0.600165069103241,
+      "threshold": 0.5,
+      "f1": 1.0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "confusion": {
+        "tn": 150,
+        "fp": 0,
+        "fn": 0,
+        "tp": 217
+      },
+      "per_provider_recall": {
+        "elevenlabs": 1.0,
+        "google_tts": 1.0
+      }
+    }
+  },
+  "best_mel_cnn": {
+    "modality": null,
+    "backend": null,
+    "manifest": null,
+    "audio_dir": null,
+    "val_metrics": {
+      "roc_auc": 1.0,
+      "eer": 0.0,
+      "eer_threshold": 0.7786626815795898,
+      "f1": 1.0,
+      "precision": 1.0,
+      "recall": 1.0
+    }
+  },
+  "best_visual": {
+    "modality": "visual",
+    "backend": null,
+    "manifest": "data/derived/visual_speech_manifest_voice_split.csv",
+    "audio_dir": null,
+    "val_metrics": {
+      "n": 367,
+      "roc_auc": 0.5687557603686635,
+      "eer": 0.43325652841781875,
+      "eer_threshold": 0.5210331678390503,
+      "threshold": 0.5,
+      "f1": 0.7431506849315068,
+      "precision": 0.5912806539509536,
+      "recall": 1.0,
+      "confusion": {
+        "tn": 0,
+        "fp": 150,
+        "fn": 0,
+        "tp": 217
+      },
+      "per_provider_recall": {
+        "elevenlabs": 1.0,
+        "google_tts": 1.0
+      }
+    }
+  }
+}

@@ -18,7 +18,9 @@ from sklearn.metrics import (
 
 from src.data.feature_store import (
     AudioFeatureDataset,
+    FusionFeatureDataset,
     NormalizationStats,
+    VisualFeatureDataset,
     make_dataloader,
 )
 from src.models.late_fusion import LateFusionClassifier
@@ -106,6 +108,7 @@ def evaluate_checkpoint(
     allow_test: bool = False,
     device: str = "auto",
     manifest: str | Path | None = None,
+    lips_dir: Path | None = None,
     batch_size: int = 32,
 ) -> dict:
     if split == "test" and not allow_test:
@@ -118,28 +121,43 @@ def evaluate_checkpoint(
     dev = _resolve_device(device)
 
     hp = ckpt["model_hparams"]
+    modality = hp["modality"]
     model = LateFusionClassifier(
-        modality=hp["modality"], emb=hp.get("emb", 128), p=hp.get("dropout", 0.3)
+        modality=modality, emb=hp.get("emb", 128), p=hp.get("dropout", 0.3)
     )
     model.load_state_dict(ckpt["state_dict"])
     model.to(dev).eval()
 
     ns = ckpt["norm_stats"]
     stats = NormalizationStats(
-        audio_mean=np.asarray(ns["audio_mean"], dtype=np.float32),
-        audio_std=np.asarray(ns["audio_std"], dtype=np.float32),
-        lips_mean=None,
-        lips_std=None,
+        audio_mean=np.asarray(ns["audio_mean"], dtype=np.float32) if "audio_mean" in ns else None,
+        audio_std=np.asarray(ns["audio_std"], dtype=np.float32) if "audio_std" in ns else None,
+        lips_mean=np.asarray(ns["lips_mean"], dtype=np.float32) if "lips_mean" in ns else None,
+        lips_std=np.asarray(ns["lips_std"], dtype=np.float32) if "lips_std" in ns else None,
         eps=ns.get("eps", 1e-6),
     )
 
-    ds = AudioFeatureDataset(
-        manifest_path=str(manifest) if manifest is not None else ckpt["manifest"],
-        split=split,
-        backend=ckpt["backend"],
-        audio_dir=Path(ckpt["audio_dir"]),
-        normalization=stats,
-    )
+    manifest_path = str(manifest) if manifest is not None else ckpt["manifest"]
+    if modality == "audio":
+        ds = AudioFeatureDataset(
+            manifest_path=manifest_path, split=split,
+            backend=ckpt["backend"], audio_dir=Path(ckpt["audio_dir"]),
+            normalization=stats,
+        )
+    elif modality == "visual":
+        ds = VisualFeatureDataset(
+            manifest_path=manifest_path, split=split,
+            lips_dir=lips_dir, normalization=stats,
+        )
+    elif modality == "fusion":
+        ds = FusionFeatureDataset(
+            manifest_path=manifest_path, split=split,
+            backend=ckpt["backend"], audio_dir=Path(ckpt["audio_dir"]),
+            lips_dir=lips_dir, normalization=stats,
+        )
+    else:
+        raise ValueError(f"unknown checkpoint modality: {modality!r}")
+
     loader = make_dataloader(ds, batch_size=batch_size, shuffle=False)
 
     ys: list[int] = []
@@ -147,8 +165,16 @@ def evaluate_checkpoint(
     providers: list[str] = []
     with torch.no_grad():
         for batch in loader:
-            audio = batch["audio"].to(dev)
-            logits = model(audio)
+            if modality == "audio":
+                logits = model(batch["audio"].to(dev))
+            elif modality == "visual":
+                logits = model(None, batch["lips"].to(dev), batch["lips_mask"].to(dev))
+            else:
+                logits = model(
+                    batch["audio"].to(dev),
+                    batch["lips"].to(dev),
+                    batch["lips_mask"].to(dev),
+                )
             probs = torch.sigmoid(logits).cpu().numpy().tolist()
             scores.extend(probs)
             ys.extend(batch["label"].cpu().numpy().astype(int).tolist())
@@ -162,7 +188,9 @@ def evaluate_checkpoint(
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(description="Evaluate an audio anti-spoof checkpoint.")
+    p = argparse.ArgumentParser(
+        description="Evaluate an audio / visual / fusion checkpoint over cached feature-store embeddings."
+    )
     p.add_argument("--checkpoint", required=True, type=Path)
     p.add_argument("--split", required=True, choices=("train", "val", "test"))
     p.add_argument("--allow-test", action="store_true",
@@ -170,6 +198,8 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--device", default="auto", choices=("auto", "cuda", "mps", "cpu"))
     p.add_argument("--manifest", default=None, type=Path,
                    help="Override manifest path (default: ckpt['manifest']).")
+    p.add_argument("--lips-dir", default=None, type=Path,
+                   help="Override lip feature dir for visual/fusion checkpoints.")
     p.add_argument("--batch-size", type=int, default=32)
     return p
 
@@ -183,6 +213,7 @@ def main(argv: list[str] | None = None) -> int:
             allow_test=args.allow_test,
             device=args.device,
             manifest=args.manifest,
+            lips_dir=args.lips_dir,
             batch_size=args.batch_size,
         )
     except SystemExit as exc:

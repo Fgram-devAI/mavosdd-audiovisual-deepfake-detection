@@ -1,4 +1,4 @@
-"""Audio anti-spoof training harness over codec-matched embeddings."""
+"""Modality-aware training harness (audio / visual / fusion) over cached feature-store embeddings."""
 from __future__ import annotations
 
 import argparse
@@ -15,7 +15,9 @@ from torch import nn
 from src import common, evaluate
 from src.data.feature_store import (
     AudioFeatureDataset,
+    FusionFeatureDataset,
     NormalizationStats,
+    VisualFeatureDataset,
     fit_normalization_stats,
     make_dataloader,
 )
@@ -80,20 +82,62 @@ def _resolve_device(name: str) -> torch.device:
     return torch.device(name)
 
 
-def build_datasets(cfg: RunConfig) -> tuple[AudioFeatureDataset, AudioFeatureDataset, NormalizationStats]:
-    train_raw = AudioFeatureDataset(
-        manifest_path=cfg.manifest, split="train", backend=cfg.backend, audio_dir=cfg.audio_dir,
-    )
-    stats = fit_normalization_stats(train_raw, modalities=("audio",))
-    train_ds = AudioFeatureDataset(
-        manifest_path=cfg.manifest, split="train", backend=cfg.backend, audio_dir=cfg.audio_dir,
-        normalization=stats,
-    )
-    val_ds = AudioFeatureDataset(
-        manifest_path=cfg.manifest, split="val", backend=cfg.backend, audio_dir=cfg.audio_dir,
-        normalization=stats,
-    )
-    return train_ds, val_ds, stats
+def build_datasets(
+    cfg: RunConfig,
+    *,
+    lips_dir: Path | None = None,
+):
+    """Return (train_ds, val_ds, NormalizationStats) for cfg.modality."""
+    if cfg.modality == "audio":
+        train_raw = AudioFeatureDataset(
+            manifest_path=cfg.manifest, split="train",
+            backend=cfg.backend, audio_dir=cfg.audio_dir,
+        )
+        stats = fit_normalization_stats(train_raw, modalities=("audio",))
+        train_ds = AudioFeatureDataset(
+            manifest_path=cfg.manifest, split="train",
+            backend=cfg.backend, audio_dir=cfg.audio_dir, normalization=stats,
+        )
+        val_ds = AudioFeatureDataset(
+            manifest_path=cfg.manifest, split="val",
+            backend=cfg.backend, audio_dir=cfg.audio_dir, normalization=stats,
+        )
+        return train_ds, val_ds, stats
+
+    if cfg.modality == "visual":
+        train_raw = VisualFeatureDataset(
+            manifest_path=cfg.manifest, split="train", lips_dir=lips_dir,
+        )
+        stats = fit_normalization_stats(train_raw, modalities=("lips",))
+        train_ds = VisualFeatureDataset(
+            manifest_path=cfg.manifest, split="train",
+            lips_dir=lips_dir, normalization=stats,
+        )
+        val_ds = VisualFeatureDataset(
+            manifest_path=cfg.manifest, split="val",
+            lips_dir=lips_dir, normalization=stats,
+        )
+        return train_ds, val_ds, stats
+
+    if cfg.modality == "fusion":
+        train_raw = FusionFeatureDataset(
+            manifest_path=cfg.manifest, split="train",
+            backend=cfg.backend, audio_dir=cfg.audio_dir, lips_dir=lips_dir,
+        )
+        stats = fit_normalization_stats(train_raw, modalities=("audio", "lips"))
+        train_ds = FusionFeatureDataset(
+            manifest_path=cfg.manifest, split="train",
+            backend=cfg.backend, audio_dir=cfg.audio_dir, lips_dir=lips_dir,
+            normalization=stats,
+        )
+        val_ds = FusionFeatureDataset(
+            manifest_path=cfg.manifest, split="val",
+            backend=cfg.backend, audio_dir=cfg.audio_dir, lips_dir=lips_dir,
+            normalization=stats,
+        )
+        return train_ds, val_ds, stats
+
+    raise ValueError(f"unknown modality: {cfg.modality!r}")
 
 
 def build_model(cfg: RunConfig) -> LateFusionClassifier:
@@ -132,15 +176,36 @@ def _append_metrics_csv(path: Path, row: dict) -> None:
         w.writerow(row)
 
 
-def _val_metric_battery(model: nn.Module, loader, device: torch.device) -> dict:
+def _forward_batch(
+    model: nn.Module,
+    batch: dict,
+    modality: str,
+    device: torch.device,
+) -> torch.Tensor:
+    if modality == "audio":
+        return model(batch["audio"].to(device))
+    if modality == "visual":
+        lips = batch["lips"].to(device)
+        mask = batch["lips_mask"].to(device)
+        return model(None, lips, mask)
+    if modality == "fusion":
+        audio = batch["audio"].to(device)
+        lips = batch["lips"].to(device)
+        mask = batch["lips_mask"].to(device)
+        return model(audio, lips, mask)
+    raise ValueError(f"unknown modality: {modality!r}")
+
+
+def _val_metric_battery(
+    model: nn.Module, loader, device: torch.device, modality: str,
+) -> dict:
     ys: list[int] = []
     scores: list[float] = []
     providers: list[str] = []
     model.eval()
     with torch.no_grad():
         for batch in loader:
-            audio = batch["audio"].to(device)
-            logits = model(audio)
+            logits = _forward_batch(model, batch, modality, device)
             probs = torch.sigmoid(logits).cpu().numpy().tolist()
             scores.extend(probs)
             ys.extend(batch["label"].cpu().numpy().astype(int).tolist())
@@ -152,11 +217,11 @@ def _val_metric_battery(model: nn.Module, loader, device: torch.device) -> dict:
     )
 
 
-def run_training(cfg: RunConfig) -> dict:
+def run_training(cfg: RunConfig, *, lips_dir: Path | None = None) -> dict:
     common.set_seed(cfg.seed)
     dev = _resolve_device(cfg.device)
 
-    train_ds, val_ds, stats = build_datasets(cfg)
+    train_ds, val_ds, stats = build_datasets(cfg, lips_dir=lips_dir)
     train_loader = make_dataloader(train_ds, batch_size=cfg.batch_size, shuffle=True, drop_last=True)
     val_loader = make_dataloader(val_ds, batch_size=cfg.batch_size, shuffle=False)
 
@@ -179,18 +244,18 @@ def run_training(cfg: RunConfig) -> dict:
         train_loss = 0.0
         n_seen = 0
         for batch in train_loader:
-            audio = batch["audio"].to(dev)
             labels = batch["label"].float().to(dev)
             optim.zero_grad()
-            logits = model(audio)
+            logits = _forward_batch(model, batch, cfg.modality, dev)
             loss = criterion(logits, labels)
             loss.backward()
             optim.step()
-            train_loss += float(loss) * audio.size(0)
-            n_seen += audio.size(0)
+            bsz = labels.size(0)
+            train_loss += float(loss) * bsz
+            n_seen += bsz
         train_loss = train_loss / max(n_seen, 1)
 
-        val_metrics = _val_metric_battery(model, val_loader, dev)
+        val_metrics = _val_metric_battery(model, val_loader, dev, cfg.modality)
         _append_metrics_csv(metrics_csv, {
             "epoch": epoch,
             "train_loss": round(train_loss, 6),
@@ -212,21 +277,25 @@ def run_training(cfg: RunConfig) -> dict:
 
     assert best_state is not None, "training produced no best checkpoint"
 
+    norm_stats: dict = {"eps": stats.eps}
+    if stats.audio_mean is not None and stats.audio_std is not None:
+        norm_stats["audio_mean"] = stats.audio_mean
+        norm_stats["audio_std"] = stats.audio_std
+    if stats.lips_mean is not None and stats.lips_std is not None:
+        norm_stats["lips_mean"] = stats.lips_mean
+        norm_stats["lips_std"] = stats.lips_std
+
     ckpt = {
         "state_dict": best_state,
         "modality": cfg.modality,
-        "backend": cfg.backend,
-        "audio_dir": str(cfg.audio_dir),
+        "backend": cfg.backend if cfg.modality != "visual" else None,
+        "audio_dir": str(cfg.audio_dir) if cfg.modality != "visual" else None,
         "model_hparams": {
             "modality": cfg.modality,
             "emb": 128,
             "dropout": cfg.dropout,
         },
-        "norm_stats": {
-            "audio_mean": stats.audio_mean,
-            "audio_std": stats.audio_std,
-            "eps": stats.eps,
-        },
+        "norm_stats": norm_stats,
         "val_metrics": best_val_metrics,
         "seed": cfg.seed,
         "manifest": str(cfg.manifest),
@@ -251,12 +320,16 @@ def _runconfig_to_dict(cfg: RunConfig) -> dict:
 
 def _build_parser() -> argparse.ArgumentParser:
     defaults = _load_training_defaults()
-    p = argparse.ArgumentParser(description="Train audio anti-spoof baseline.")
+    p = argparse.ArgumentParser(
+        description="Train an audio / visual / fusion baseline over cached feature-store embeddings."
+    )
     p.add_argument("--modality", choices=("audio", "visual", "fusion"), default="audio")
     p.add_argument("--backend", choices=tuple(CODEC_DIRS.keys()), default="wav2vec2")
-    p.add_argument("--manifest", type=Path, default=common.AUDIO_SPOOF_MANIFEST_VOICE_SPLIT)
+    p.add_argument("--manifest", type=Path, default=None)
     p.add_argument("--audio-dir", type=Path, default=None,
                    help="Override audio feature dir (default: codec-matched store for backend).")
+    p.add_argument("--lips-dir", type=Path, default=None,
+                   help="Override lip feature dir (default: data/features/lips/).")
     p.add_argument("--run-name", default=None)
     p.add_argument("--runs-dir", type=Path, default=Path("runs"))
     p.add_argument("--checkpoint-path", type=Path, default=None)
@@ -273,16 +346,46 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     defaults = _load_training_defaults()
-    args = _build_parser().parse_args(argv)
+    parser = _build_parser()
+    args = parser.parse_args(argv)
 
-    audio_dir = args.audio_dir if args.audio_dir is not None else CODEC_DIRS[args.backend]
-    run_name = args.run_name if args.run_name is not None else f"{args.modality}_{args.backend}_codec"
-    checkpoint_path = args.checkpoint_path or Path("models/checkpoints") / f"best_{args.modality}_{args.backend}.pt"
+    if args.modality == "audio":
+        manifest = args.manifest if args.manifest is not None \
+            else common.AUDIO_SPOOF_MANIFEST_VOICE_SPLIT
+    elif args.modality == "visual":
+        manifest = args.manifest if args.manifest is not None \
+            else common.VISUAL_SPEECH_MANIFEST_VOICE_SPLIT
+    else:  # fusion
+        manifest = args.manifest if args.manifest is not None \
+            else common.FUSION_SPEECH_MANIFEST_VOICE_SPLIT
+
+    if args.modality == "visual":
+        audio_dir = args.audio_dir if args.audio_dir is not None else Path("data/_unused_visual")
+    else:
+        audio_dir = args.audio_dir if args.audio_dir is not None else CODEC_DIRS[args.backend]
+
+    if args.run_name is not None:
+        run_name = args.run_name
+    elif args.modality == "visual":
+        run_name = "visual_bigru"
+    elif args.modality == "fusion":
+        run_name = f"fusion_{args.backend}_codec"
+    else:
+        run_name = f"audio_{args.backend}_codec"
+
+    if args.checkpoint_path is not None:
+        checkpoint_path = args.checkpoint_path
+    elif args.modality == "visual":
+        checkpoint_path = Path("models/checkpoints/best_visual.pt")
+    elif args.modality == "fusion":
+        checkpoint_path = Path("models/checkpoints") / f"best_fusion_{args.backend}.pt"
+    else:
+        checkpoint_path = Path("models/checkpoints") / f"best_audio_{args.backend}.pt"
 
     cfg = RunConfig(
         modality=args.modality,
         backend=args.backend,
-        manifest=args.manifest,
+        manifest=manifest,
         audio_dir=audio_dir,
         batch_size=args.batch_size,
         epochs=args.epochs,
@@ -297,7 +400,7 @@ def main(argv: list[str] | None = None) -> int:
         checkpoint_path=checkpoint_path,
         max_trainable_params=defaults["max_trainable_params"],
     )
-    result = run_training(cfg)
+    result = run_training(cfg, lips_dir=args.lips_dir)
     bm = result["best_val_metrics"]
     print(
         f"run={cfg.run_name} best_epoch={result['best_epoch']} "
