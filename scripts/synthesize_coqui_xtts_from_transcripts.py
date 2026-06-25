@@ -214,7 +214,7 @@ def main() -> int:
     parser.add_argument(
         "--source-folder",
         action="append",
-        default=["real"],
+        default=None,
         help="Restrict to source folder/class. Defaults to real. Repeatable.",
     )
     parser.add_argument("--limit", type=int, default=None)
@@ -230,7 +230,8 @@ def main() -> int:
 
     load_env_file(args.env_file)
     voice_names = load_voice_names(args.voice_name, args.voice_file)
-    records = collect_transcripts(args.transcript_dir, args.source_folder, args.limit, args.max_chars)
+    source_folders = args.source_folder if args.source_folder is not None else ["real"]
+    records = collect_transcripts(args.transcript_dir, source_folders, args.limit, args.max_chars)
 
     source_counts: Counter[str] = Counter()
     voice_counts: Counter[str] = Counter()
