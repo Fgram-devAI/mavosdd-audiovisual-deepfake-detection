@@ -285,13 +285,18 @@ def predict_video(
 
 def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
-    result = predict_video(
-        args.video,
-        args.checkpoint,
-        device=args.device,
-        threshold=args.threshold,
-        codec_match=not args.no_codec_match,
-    )
+    try:
+        result = predict_video(
+            args.video,
+            args.checkpoint,
+            device=args.device,
+            threshold=args.threshold,
+            codec_match=not args.no_codec_match,
+        )
+    except (ValueError, RuntimeError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    print(_render_json(result) if args.json else _render_human(result))
     return 0
 
 

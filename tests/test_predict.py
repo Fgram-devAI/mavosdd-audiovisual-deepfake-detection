@@ -362,3 +362,99 @@ class TestPredictVideoCorruptMp4:
         ckpt = _build_checkpoint(tmp_path, "audio", codec_dir=False)
         with pytest.raises(RuntimeError, match="could not read video/audio"):
             predict.predict_video(video, ckpt, device="cpu")
+
+
+class TestCLI:
+    def test_cli_default_emits_human_line(
+        self, tmp_path, capsys, make_mp4_with_audio, stub_backend_loader,
+    ):
+        video = make_mp4_with_audio(duration=4.0)
+        ckpt = _build_checkpoint(tmp_path, "audio", codec_dir=False)
+        rc = predict.main([
+            "--video", str(video), "--checkpoint", str(ckpt), "--device", "cpu",
+        ])
+        assert rc == 0
+        out = capsys.readouterr().out.strip()
+        assert "modality=audio" in out
+        assert "p_spoof=" in out
+
+    def test_cli_json_emits_parseable_dict(
+        self, tmp_path, capsys, make_mp4_with_audio, stub_backend_loader,
+    ):
+        video = make_mp4_with_audio(duration=4.0)
+        ckpt = _build_checkpoint(tmp_path, "audio", codec_dir=False)
+        rc = predict.main([
+            "--video", str(video), "--checkpoint", str(ckpt),
+            "--device", "cpu", "--json",
+        ])
+        assert rc == 0
+        out = capsys.readouterr().out.strip()
+        parsed = json.loads(out)
+        assert parsed["modality"] == "audio"
+        assert 0.0 <= parsed["p_spoof"] <= 1.0
+
+    def test_cli_threshold_flips_label(
+        self, tmp_path, capsys, make_mp4_with_audio, stub_backend_loader,
+    ):
+        video = make_mp4_with_audio(duration=4.0)
+        ckpt = _build_checkpoint(tmp_path, "audio", codec_dir=False)
+        # threshold 0.0 → every prob ≥ 0 → label spoof
+        rc = predict.main([
+            "--video", str(video), "--checkpoint", str(ckpt),
+            "--device", "cpu", "--threshold", "0.0", "--json",
+        ])
+        assert rc == 0
+        parsed_low = json.loads(capsys.readouterr().out.strip())
+        assert parsed_low["label"] == "spoof"
+        # threshold 1.5 (above any sigmoid output) → label bonafide
+        rc = predict.main([
+            "--video", str(video), "--checkpoint", str(ckpt),
+            "--device", "cpu", "--threshold", "1.5", "--json",
+        ])
+        assert rc == 0
+        parsed_high = json.loads(capsys.readouterr().out.strip())
+        assert parsed_high["label"] == "bonafide"
+
+    def test_cli_no_codec_match_flag_sets_field_false(
+        self, tmp_path, capsys, make_mp4_with_audio, stub_backend_loader,
+    ):
+        video = make_mp4_with_audio(duration=4.0)
+        ckpt = _build_checkpoint(tmp_path, "audio", codec_dir=True)  # _codec dir → default ON
+        rc = predict.main([
+            "--video", str(video), "--checkpoint", str(ckpt),
+            "--device", "cpu", "--no-codec-match", "--json",
+        ])
+        assert rc == 0
+        parsed = json.loads(capsys.readouterr().out.strip())
+        assert parsed["codec_matched"] is False
+
+    def test_cli_bad_checkpoint_returns_one_with_stderr_message(
+        self, tmp_path, capsys, make_mp4_with_audio,
+    ):
+        # Spec §3: bad checkpoint → clean error, non-zero exit (no raw traceback).
+        video = make_mp4_with_audio(duration=4.0)
+        bad_ckpt = tmp_path / "bad.pt"
+        torch.save({"state_dict": {}, "modality": "audio",
+                    "backend": "wav2vec2",
+                    "model_hparams": {"modality": "audio", "emb": 128, "dropout": 0.3}},
+                   bad_ckpt)
+        rc = predict.main([
+            "--video", str(video), "--checkpoint", str(bad_ckpt), "--device", "cpu",
+        ])
+        assert rc == 1
+        captured = capsys.readouterr()
+        assert "norm_stats" in captured.err
+        assert captured.out.strip() == ""  # no human/json line on error
+
+    def test_cli_corrupt_mp4_returns_one_with_stderr_message(
+        self, tmp_path, capsys, make_corrupt_mp4, stub_backend_loader,
+    ):
+        # Spec §7: corrupt mp4 → wrapped RuntimeError, exit 1, stderr message.
+        video = make_corrupt_mp4()
+        ckpt = _build_checkpoint(tmp_path, "audio", codec_dir=False)
+        rc = predict.main([
+            "--video", str(video), "--checkpoint", str(ckpt), "--device", "cpu",
+        ])
+        assert rc == 1
+        captured = capsys.readouterr()
+        assert "could not read video/audio" in captured.err
