@@ -20,5 +20,8 @@ grpcio-status==1.62.3
 google-cloud-speech==2.26.1
 google-cloud-texttospeech==2.16.3
 requests==2.32.3
-TTS>=0.22.0
 openai>=1.0.0
+# Coqui TTS is NOT pinned here — TTS 0.22.0 hard-pins numpy==1.22.0,
+# which conflicts irreconcilably with librosa, matplotlib, pandas, etc.
+# Install it in an isolated venv before running
+# scripts/synthesize_coqui_xtts_from_transcripts.py. See README.
