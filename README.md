@@ -1,18 +1,28 @@
 # Audiovisual Deepfake Detection
 
-Late-fusion detector for MAVOS-DD videos, combining frozen Wav2Vec2 audio
-features with MediaPipe lip-landmark motion features.
+Late-fusion detector for MAVOS-DD videos, combining frozen audio embeddings
+(Wav2Vec2 / WavLM / HuBERT) with MediaPipe lip-landmark motion features.
+
+Phase 1–5 baselines (PRs #7–#9) were trained on the original **1,000-video
+cap** (500 real, 250 EchoMimic, 250 MEMO). The roadmap is now revised to
+**~4,149 videos** across five MAVOS-DD source folders (real, EchoMimic,
+MEMO, LivePortrait, Sonic) for Phase 6+ work — see
+[`docs/roadmap-audio-visual-speech-detection.md`](docs/roadmap-audio-visual-speech-detection.md)
+Revision 1.
 
 The pipeline is intentionally feature-first:
 
-1. Stream and verify a capped 1,000-video MAVOS-DD subset.
-2. Extract frozen Wav2Vec2 audio embeddings and MediaPipe lip-landmark sequences.
-3. Train a small late-fusion neural classifier on serialized feature arrays only.
-4. Evaluate once on the locked test split and package a reproducible predictor.
+1. Stream a capped MAVOS-DD subset.
+2. Extract frozen audio embeddings and MediaPipe lip-landmark sequences.
+3. Train a compact (< 2M trainable params) late-fusion classifier on
+   serialized `.npy`/`.npz` features only — raw video never enters the
+   training loop.
+4. Evaluate once on the locked test split and package a reproducible
+   predictor.
 
 ## Quick Start
 
-Create a Python 3.10 virtual environment.
+Python 3.10 virtual environment.
 
 macOS / Linux:
 
@@ -30,503 +40,164 @@ py -3.10 -m venv .venv
 python -m pip install -r requirements.txt
 ```
 
-Windows Command Prompt:
-
-```bat
-py -3.10 -m venv .venv
-.venv\Scripts\activate.bat
-python -m pip install -r requirements.txt
-```
-
 Smoke-test the model module:
 
 ```bash
 python -m src.models.late_fusion
 ```
 
-## Fetch The MAVOS-DD Subset
+## Pipeline (Phase 1–4 — Data Preparation)
 
-The ingestion command builds the capped audiovisual subset from the Hugging Face
-MAVOS-DD repository. It lists remote filenames, filters only
-`english/{real,echomimic,memo}/*.mp4`, sorts that candidate list, and downloads
-until the accepted-video caps are reached:
+Each step writes gitignored artifacts under `data/`. Pass `--help` to any
+module for full flags. The fetch is deterministic for a fixed MAVOS-DD
+repository state; cap changes are picked up from `src.common.CAPS` and the
+downloader is idempotent on re-runs.
 
-```text
-real        500
-echomimic   250
-memo        250
-total      1000
-```
+1. **Fetch the MAVOS-DD subset.**
 
-Run:
+   ```bash
+   python -m src.data.download_subset
+   python -m src.data.download_subset --validate    # expect VALIDATION OK
+   ```
 
-macOS / Linux:
+2. **Freeze splits and extract features** (70/15/15 stratified on
+   `source_folder`, seed 42; one `.npy` per video for audio, one `.npz`
+   for lips).
 
-```bash
-source .venv/bin/activate
-python -m src.data.download_subset
-python -m src.data.download_subset --validate
-```
+   ```bash
+   python -m src.data.make_splits
+   python -m src.features.extract_audio
+   python -m src.features.extract_lips
+   ```
 
-Windows PowerShell:
+3. **Transcribe bonafide WAVs** (optional, prerequisite for TTS spoof
+   generation). Requires `GOOGLE_APPLICATION_CREDENTIALS` and
+   `GOOGLE_CLOUD_PROJECT` in `.env`.
 
-```powershell
-.\.venv\Scripts\Activate.ps1
-python -m src.data.download_subset
-python -m src.data.download_subset --validate
-```
+   ```bash
+   python scripts/export_wav.py
+   python scripts/transcribe_google_stt_v2.py
+   ```
 
-Useful monitoring commands while fetching:
+4. **Generate spoof audio** from those transcripts. Each script supports
+   `--estimate-only` (character count, no spend) and `--limit N` (smoke
+   run). Outputs land under `data/tts_audio/`.
 
-```bash
-du -sh data data/raw data/raw/real data/raw/echomimic data/raw/memo data/quarantine
-find data/raw -type f | wc -l
-python - <<'PY'
-import pandas as pd
-df = pd.read_csv("data/manifest.csv")
-print(df["source_folder"].value_counts())
-print("total accepted:", len(df))
-PY
-```
+   | Engine             | Script                                                | Notes                                  |
+   |--------------------|-------------------------------------------------------|----------------------------------------|
+   | ElevenLabs TTS     | `scripts/synthesize_tts_from_transcripts.py`           | Text → speech, paid API                |
+   | ElevenLabs STS     | `scripts/convert_real_speech_elevenlabs.py`            | Speech → speech (preserves prosody)    |
+   | Google Neural2 TTS | `scripts/synthesize_google_tts_from_transcripts.py`    | Paid API; default voice rotation       |
+   | Coqui XTTS-v2      | `scripts/synthesize_coqui_xtts_from_transcripts.py`    | Local, free; Phase 6+ multi-engine     |
+   | OpenAI TTS         | `scripts/synthesize_openai_tts_from_transcripts.py`    | Paid API; Phase 6+ multi-engine        |
 
-The fetch is deterministic for a fixed MAVOS-DD repository state: candidates are
-sorted before caps are applied, and rejected files do not count toward caps.
-`data/manifest.csv` is generated locally as the record of the accepted subset,
-but it stays gitignored with raw videos, quarantine logs, extracted features,
-checkpoints, and run artifacts. Keeping the manifest out of Git lets fresh clones
-run the same fetch command instead of treating a committed manifest as already
-downloaded local data.
+5. **Build derived manifests** (`audio_spoof`, `visual_speech`,
+   `fusion_speech`).
 
-## Split And Extract Features
+   ```bash
+   python -m src.data.build_speech_manifests
+   ```
 
-After `python -m src.data.download_subset --validate` prints `VALIDATION OK`,
-create the local train/validation/test split files:
+## Anti-Leakage (Phase 4 Hardening)
 
-```bash
-python -m src.data.make_splits
-```
+Two confounders surfaced during the mel-CNN baseline (PR #7) and were
+neutralized in place. Training and evaluation default to the neutralized
+inputs; the original (leaky) embeddings/splits remain on disk but are
+unused by the merged baselines.
 
-Then extract audio and lip-motion feature artifacts:
-
-```bash
-python -m src.features.extract_audio
-python -m src.features.extract_lips
-```
-
-Check extraction counts:
-
-macOS / Linux:
+**Codec footprint match.** Bonafide rows are clean 16 kHz PCM WAV; every
+TTS spoof row is lossy MP3 (ElevenLabs 44.1 kHz / 128 kbps, Google TTS
+24 kHz / 64 kbps). That 100 % format/label correlation lets any mel-input
+model shortcut to a WAV-vs-MP3 detector. Fix: round-trip every bonafide
+through MP3 (codec spec sampled per row from the spoof distribution) and
+decode all rows back to 16 kHz mono WAV, so codec history becomes
+label-independent. Requires `ffmpeg` + `libmp3lame` on PATH.
 
 ```bash
-find data/features/audio -name '*.npy' | wc -l
-find data/features/lips -name '*.npz' | wc -l
-```
+python -m src.data.codec_match_audio                    # writes data/audio_wav_codec_matched/ + manifest
 
-Windows PowerShell:
-
-```powershell
-(Get-ChildItem data/features/audio -Filter *.npy).Count
-(Get-ChildItem data/features/lips -Filter *.npz).Count
-```
-
-Expected count for both modalities is `1000`.
-
-## Transcribe WAV Audio With Google STT V2
-
-The optional transcription step turns local WAV files into JSON transcripts for
-later synthetic speech experiments with Google TTS, ElevenLabs, or another voice
-generation provider.
-
-First export WAV files from the raw videos:
-
-```bash
-python scripts/export_wav.py
-```
-
-Then configure Google Cloud authentication. For local development with the
-Google Cloud CLI:
-
-```bash
-gcloud auth application-default login
-echo 'GOOGLE_CLOUD_PROJECT="<your-gcp-project-id>"' >> .env
-```
-
-For a service-account key file:
-
-```bash
-cat >> .env <<'EOF'
-GOOGLE_APPLICATION_CREDENTIALS="/absolute/path/to/service-account.json"
-GOOGLE_CLOUD_PROJECT="<your-gcp-project-id>"
-EOF
-```
-
-Windows PowerShell equivalents:
-
-```powershell
-gcloud auth application-default login
-Add-Content .env 'GOOGLE_CLOUD_PROJECT="<your-gcp-project-id>"'
-```
-
-or:
-
-```powershell
-Add-Content .env 'GOOGLE_APPLICATION_CREDENTIALS="C:\absolute\path\to\service-account.json"'
-Add-Content .env 'GOOGLE_CLOUD_PROJECT="<your-gcp-project-id>"'
-```
-
-Make sure the Google Cloud project has billing enabled and the Speech-to-Text
-API enabled. The transcription script automatically loads `.env` by default.
-Then run a small smoke test:
-
-```bash
-python scripts/transcribe_google_stt_v2.py --limit 5
-```
-
-Run all WAV files:
-
-```bash
-python scripts/transcribe_google_stt_v2.py
-```
-
-Run only the synthetic classes planned for TTS augmentation:
-
-```bash
-python scripts/transcribe_google_stt_v2.py \
-  --source-folder echomimic \
-  --source-folder memo \
-  --model latest_long
-```
-
-Outputs are written locally under:
-
-```text
-data/transcripts/google_stt_v2/
-```
-
-`data/transcripts/` is gitignored because transcripts may contain dataset speech
-content and are generated artifacts.
-
-## Generate ElevenLabs TTS Alternatives
-
-Use the Google STT transcripts to generate synthetic speech alternatives with
-ElevenLabs. The script rotates deterministically through the project voice pool
-so repeated runs assign the same transcript to the same voice as long as the
-input transcripts and voice list stay unchanged.
-
-Add the ElevenLabs API key to `.env`:
-
-```bash
-cat >> .env <<'EOF'
-ELEVENLABS_API_KEY="<your-elevenlabs-api-key>"
-EOF
-```
-
-Windows PowerShell:
-
-```powershell
-Add-Content .env 'ELEVENLABS_API_KEY="<your-elevenlabs-api-key>"'
-```
-
-Estimate selected transcript characters before spending API credits:
-
-```bash
-python scripts/synthesize_tts_from_transcripts.py --estimate-only
-```
-
-If ElevenLabs rejects library voices on a free plan, inspect the voices available
-to your API key:
-
-```bash
-python scripts/synthesize_tts_from_transcripts.py --list-voices
-```
-
-Then run with voices from your account instead of the project voice pool, if
-needed:
-
-```bash
-python scripts/synthesize_tts_from_transcripts.py --use-account-voices --limit 2
-```
-
-Generate a capped batch that stays under a character budget:
-
-```bash
-python scripts/synthesize_tts_from_transcripts.py --max-chars 10000
-```
-
-Generate all available transcripts:
-
-```bash
-python scripts/synthesize_tts_from_transcripts.py
-```
-
-Restrict to the planned synthetic classes:
-
-```bash
-python scripts/synthesize_tts_from_transcripts.py \
-  --source-folder echomimic \
-  --source-folder memo
-```
-
-Outputs are written locally under:
-
-```text
-data/tts_audio/
-```
-
-`data/tts_audio/` is gitignored because generated speech is a local artifact.
-
-## Generate ElevenLabs Speech-To-Speech Alternatives
-
-For real clips, you can also preserve the original timing and delivery while
-changing the voice with ElevenLabs speech-to-speech. This uses the exported WAV
-files, not transcripts.
-
-Estimate the real-audio selection:
-
-```bash
-python scripts/convert_real_speech_elevenlabs.py --estimate-only
-```
-
-Run a tiny paid smoke test:
-
-```bash
-python scripts/convert_real_speech_elevenlabs.py --limit 2
-```
-
-Run a capped batch by audio duration:
-
-```bash
-python scripts/convert_real_speech_elevenlabs.py --max-seconds 600
-```
-
-Outputs are written locally under:
-
-```text
-data/tts_audio/elevenlabs_sts/real/
-```
-
-## Generate Google TTS For Real Transcripts
-
-If ElevenLabs credits are exhausted, use the existing Google STT transcripts
-with Google Cloud Text-to-Speech. By default this runs only `real` transcripts
-and rotates through several `en-US-Neural2-*` voices.
-
-Estimate selected characters:
-
-```bash
-python scripts/synthesize_google_tts_from_transcripts.py --estimate-only
-```
-
-Run a small smoke test:
-
-```bash
-python scripts/synthesize_google_tts_from_transcripts.py --limit 5
-```
-
-Run all available real transcripts:
-
-```bash
-python scripts/synthesize_google_tts_from_transcripts.py
-```
-
-Outputs are written locally under:
-
-```text
-data/tts_audio/google_tts/real/
-```
-
-## Match Audio Codec Footprint (Anti-Leakage)
-
-Bonafide rows on disk are clean 16 kHz PCM WAVs; every generated spoof row is a
-lossy MP3 (ElevenLabs at 44.1 kHz / 128 kbps, Google TTS at 24 kHz / 64 kbps).
-That 100% format/label correlation lets any mel-input model shortcut to a
-WAV-vs-MP3 codec discriminator and ignore the actual TTS artifacts. The
-codec-match step round-trips each bonafide WAV through MP3 — at a codec spec
-sampled deterministically per row from the spoof provider distribution — and
-decodes every row back to a 16 kHz mono WAV, so codec history becomes
-label-independent.
-
-Requires `ffmpeg` and `libmp3lame` on PATH (`brew install ffmpeg` on macOS).
-
-```bash
-python -m src.data.codec_match_audio
-```
-
-Defaults read `data/derived/audio_spoof_manifest.csv` and write:
-
-```text
-data/audio_wav_codec_matched/{sample_id}.wav
-data/derived/audio_spoof_manifest_codec_matched.csv
-```
-
-The new manifest has the same SCHEMA as the input with `audio_path` repointed
-at the new tree. Both paths are gitignored.
-
-### Re-extract Audio Embeddings From The Codec-Matched WAVs
-
-After codec-match the existing `data/features/audio_{wav2vec2,wavlm,hubert}/`
-stores are stale — they were extracted from the leaky originals. Re-run each
-backend against the codec-matched manifest with `--overwrite`:
-
-```bash
-python -m src.features.extract_audio_embeddings --backend wav2vec2 --manifest data/derived/audio_spoof_manifest_codec_matched.csv --overwrite
-python -m src.features.extract_audio_embeddings --backend wavlm    --manifest data/derived/audio_spoof_manifest_codec_matched.csv --overwrite
-python -m src.features.extract_audio_embeddings --backend hubert   --manifest data/derived/audio_spoof_manifest_codec_matched.csv --overwrite
-```
-
-Each backend writes 2171 `.npy` files into its backend-specific default
-directory; pass `--device cuda` or `--device mps` if a GPU is available.
-
-### Re-extract Mel-Spectrograms From The Codec-Matched WAVs
-
-The mel-CNN baseline in `notebooks/01_mel_cnn_baseline.ipynb` is the most
-codec-sensitive head in the project — its near-perfect val ROC-AUC on the
-original features was the trigger for this whole step. Re-extract mel into
-the same `data/features/audio_mel/` directory and re-run the notebook end to
-end as a diagnostic; a large AUC drop confirms the fix neutralized the
-shortcut.
-
-```bash
-python -m src.features.extract_mel --manifest data/derived/audio_spoof_manifest_codec_matched.csv --overwrite
-```
-
-## Voice-Disjoint Split (Anti-Leakage)
-
-Even with codec neutralized, the original splits let the *same TTS voice*
-appear in train, val, and test simultaneously — the model could memorize a
-voice and recognize it across splits. The voice-disjoint manifest confines
-each `(provider, voice_id_or_name)` to exactly one split:
-
-```bash
-python -m src.data.make_voice_disjoint_manifest
-```
-
-Writes `data/derived/audio_spoof_manifest_voice_split.csv` (2,171 rows;
-train 1,492 / val 367 / test 312; 1,000 bonafide / 1,171 spoof). Its
-`audio_path` column points at the codec-matched WAVs, so this single
-manifest neutralizes **both** confounders. Training and evaluation default
-to it.
-
-## Train The Audio Anti-Spoof Baseline
-
-Re-extract embeddings from the codec-matched WAVs into a separate store so
-the original (leaky) embeddings stay untouched:
-
-```bash
+# Re-extract from the codec-matched WAVs (the legacy stores are now stale):
 for B in wav2vec2 wavlm hubert; do
   python -m src.features.extract_audio_embeddings --backend $B \
-    --manifest data/derived/audio_spoof_manifest_voice_split.csv \
-    --out-dir data/features/audio_${B}_codec
+    --manifest data/derived/audio_spoof_manifest_codec_matched.csv --overwrite
 done
+python -m src.features.extract_mel \
+  --manifest data/derived/audio_spoof_manifest_codec_matched.csv --overwrite
 ```
 
-Train each backend (validation-only model selection; the test split is
-never read):
+**Voice-disjoint split.** Even with codec neutralized, the same TTS voice
+appeared in train, val, and test simultaneously. Fix: confine each
+`(provider, voice_id_or_name)` to exactly one split.
 
 ```bash
-python -m src.train --backend wav2vec2 --run-name audio_wav2vec2_codec
-python -m src.train --backend wavlm    --run-name audio_wavlm_codec
-python -m src.train --backend hubert   --run-name audio_hubert_codec
+python -m src.data.make_voice_disjoint_manifest        # data/derived/audio_spoof_manifest_voice_split.csv
+python -m src.data.apply_voice_split --target data/derived/visual_speech_manifest.csv \
+  --out data/derived/visual_speech_manifest_voice_split.csv
+python -m src.data.apply_voice_split --target data/derived/fusion_speech_manifest.csv \
+  --out data/derived/fusion_speech_manifest_voice_split.csv
 ```
 
-Evaluate a checkpoint on val (test is refused unless `--allow-test`):
+The audio voice-split manifest's `audio_path` already points at the
+codec-matched WAVs, so this single file neutralizes **both** confounders.
+The `apply_voice_split` helper rewrites only the `split` column of the
+visual/fusion manifests, preserving `pair_label_binary` byte-identically.
 
-```bash
-python -m src.evaluate --checkpoint models/checkpoints/best_audio_wav2vec2.pt --split val
-```
+## Phase 5 Baselines — Results
 
-Honest in-distribution val ROC-AUC with **codec-matched + voice-disjoint**
-inputs:
+Validation-only model selection; the test split is locked for Phase 6's
+single consolidated pass. Honest in-distribution val ROC-AUC on the
+**codec-matched + voice-disjoint** inputs:
 
-| Backend  | Val ROC-AUC | Val EER  |
-|----------|-------------|----------|
-| Wav2Vec2 | 0.9508      | 0.1063   |
-| WavLM    | 1.0000      | 0.0056   |
-| HuBERT   | 1.0000      | 0.0000   |
-
-### Known Limitation — Per-TTS-Engine Spectral Fingerprinting
-
-WavLM and HuBERT saturate at val ROC-AUC = 1.0 even after both confounders
-are neutralized. Wav2Vec2 reaches 0.95. The remaining shortcut is
-**generator fingerprinting**: every TTS engine leaves vocoder/encoder
-artifacts (high-frequency residuals, silence padding, bandwidth ceilings)
-that are invariant to voice, codec, and text. Frozen SSL encoders
-pretrained on real human speech amplify these artifacts because TTS audio
-lands in a different region of the embedding manifold.
-
-In effect, the trained head is closer to a **two-class TTS-engine detector
-(ElevenLabs OR Google TTS) vs MAVOS-DD bonafide** than a generalized
-deepfake detector. Per-provider recall on the wav2vec2 val run already
-hints at this — `elevenlabs=0.85`, `google_tts=0.97`.
-
-Practical consequences:
-
-- A **new TTS engine** the model has not seen (Sesame, NotebookLM,
-  OpenAI TTS, future ElevenLabs versions) will likely evade detection
-  because it leaves a different fingerprint.
-- A 1.0 in-distribution AUC is therefore **not** evidence of a
-  generator-agnostic anti-spoof system.
-
-The honest evaluation protocol for this regime is **engine-disjoint
-evaluation** (train on one engine + bonafide, evaluate zero-shot on the
-held-out engine) or **leave-one-engine-out** across ≥3 generators, per
-the ASVspoof literature. This is recorded as a stated limitation rather
-than escalated to a new branch.
-
-## Train The Visual & Fusion Baselines
-
-Built on top of the same voice-disjoint split as the audio baseline. The
-visual/fusion manifests start with the source-video split, so a one-time
-remap aligns them to the audio voice-split before training:
-
-```bash
-python -m src.data.apply_voice_split \
-  --target data/derived/visual_speech_manifest.csv \
-  --out    data/derived/visual_speech_manifest_voice_split.csv
-python -m src.data.apply_voice_split \
-  --target data/derived/fusion_speech_manifest.csv \
-  --out    data/derived/fusion_speech_manifest_voice_split.csv
-```
-
-Train (validation-only model selection; the test split is never read):
-
-```bash
-python -m src.train --modality visual --run-name visual_bigru
-python -m src.train --modality fusion --backend wav2vec2 --run-name fusion_wav2vec2_codec
-# optional fusion ablations
-python -m src.train --modality fusion --backend wavlm  --run-name fusion_wavlm_codec
-python -m src.train --modality fusion --backend hubert --run-name fusion_hubert_codec
-```
-
-Evaluate on val (test is refused unless `--allow-test`):
-
-```bash
-python -m src.evaluate --checkpoint models/checkpoints/best_visual.pt          --split val
-python -m src.evaluate --checkpoint models/checkpoints/best_fusion_wav2vec2.pt --split val
-```
-
-Honest in-distribution val ROC-AUC on the **voice-disjoint** split:
-
-| Modality | wav2vec2 | wavlm | hubert |
-|----------|----------|-------|--------|
+| Modality               | wav2vec2           | wavlm              | hubert             |
+|------------------------|--------------------|--------------------|--------------------|
 | audio                  | 0.9508 (EER 0.106) | 1.0000 (EER 0.006) | 1.0000 (EER 0.000) |
 | fusion (audio ⊕ lips)  | 0.9509 (EER 0.107) | 1.0000 (EER 0.000) | 1.0000 (EER 0.000) |
-| visual (lips only)     | 0.5688 (EER 0.433) | — | — |
+| visual (lips only)     | 0.5688 (EER 0.433) | —                  | —                  |
 
-The full per-checkpoint metric battery (roc_auc, eer, eer_threshold, f1,
-precision, recall, confusion, per_provider_recall) is committed at
-`reports/val_eval/all_checkpoints_val_metrics.json`.
+Train:
 
-### Known Limitations — Visual Collapse And Concat-Fusion Inheritance
+```bash
+# Audio anti-spoof (per backend)
+python -m src.train --backend {wav2vec2,wavlm,hubert} --run-name audio_<backend>_codec
+
+# Visual + fusion
+python -m src.train --modality visual --run-name visual_bigru
+python -m src.train --modality fusion --backend wav2vec2 --run-name fusion_wav2vec2_codec
+```
+
+Evaluate any checkpoint on val (test refused unless `--allow-test`):
+
+```bash
+python -m src.evaluate --checkpoint models/checkpoints/best_<name>.pt --split val
+```
+
+Full per-checkpoint metric battery (roc_auc, eer, eer_threshold, f1,
+precision, recall, confusion, per-provider recall) is committed at
+[`reports/val_eval/all_checkpoints_val_metrics.json`](reports/val_eval/all_checkpoints_val_metrics.json).
+
+### Known Limitations
+
+**Per-TTS-engine spectral fingerprinting.** WavLM and HuBERT saturate at
+val ROC-AUC = 1.0 even after both confounders are neutralized; Wav2Vec2
+reaches 0.95. The remaining shortcut is generator fingerprinting — every
+TTS engine leaves vocoder/encoder artifacts (high-frequency residuals,
+silence padding, bandwidth ceilings) invariant to voice, codec, and text.
+The trained head is therefore closer to a *two-class TTS-engine detector*
+(ElevenLabs OR Google TTS vs MAVOS-DD bonafide) than a generalized
+deepfake detector — a new engine the model has not seen will likely evade
+detection. The honest evaluation protocol is **engine-disjoint** /
+**leave-one-engine-out** across ≥ 3 generators, scoped as the future
+`feat/multi-engine-spoof` branch (Coqui XTTS-v2 and OpenAI TTS entry
+points already shipped in `scripts/`).
 
 **Visual-only collapses to a constant predictor.** Val confusion
-`tn=0/fp=150/fn=0/tp=217` means the BiGRU labels *every* row as spoof.
-ROC-AUC 0.57 confirms the underlying scores barely separate the classes
-at any threshold. The structural cause: every video contributes a paired
-bonafide row and one or more matched spoof rows, all sharing the same
+`tn=0 / fp=150 / fn=0 / tp=217` — the BiGRU labels every row as spoof.
+ROC-AUC 0.57 confirms the underlying scores don't separate the classes at
+any threshold. Structural cause: every video contributes a paired bonafide
+row and one or more matched spoof rows, all sharing the same
 `source_video_id` and therefore the **same `.npz` lip features**. A model
-asked to discriminate between two rows whose input is byte-identical
-cannot do better than class-frequency bias.
+asked to discriminate two rows whose input is byte-identical cannot do
+better than class-frequency bias.
 
 **Late fusion by concat ≈ audio-only.** Fusion wav2vec2 0.9509 vs audio
 wav2vec2 0.9508 — statistically indistinguishable. Concat fusion can't
@@ -535,5 +206,3 @@ inherits the dominant stream. The signal that *would* help is
 **audio-visual consistency** (does the mouth motion match the audio?) —
 a SyncNet-style lip-sync head. That requires a roadmap revision and is
 explicitly deferred.
-
-See `docs/workflow.md` for the phase-based implementation guide.
