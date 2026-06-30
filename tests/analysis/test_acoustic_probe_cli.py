@@ -29,7 +29,6 @@ def mini_manifest(
     make_white_noise_wav,
 ):
     rows = []
-    audio_dir = tmp_path / "audio"
     for i in range(3):
         # bonafide: white noise, train
         p = make_white_noise_wav(name=f"bona_train_{i}.wav", seed=100 + i)
