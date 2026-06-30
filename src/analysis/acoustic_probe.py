@@ -125,13 +125,13 @@ def _load_or_init_cache(
             f"only_in_request={sorted(only_expected)}). "
             "Pass --force to recompute, or point --out-dir at a clean directory."
         )
-    # Convert numeric columns to float to preserve dtype across CSV round-trip
-    for col in cached.columns:
-        if col not in CACHE_METADATA_COLUMNS:
-            try:
-                cached[col] = cached[col].astype(float)
-            except (ValueError, TypeError):
-                pass  # skip if conversion fails
+    # Convert feature columns to float using coerce so bad data surfaces as NaN
+    # rather than silently keeping untyped object columns.
+    feat_cols_in_cache = [c for c in cached.columns if c not in CACHE_METADATA_COLUMNS]
+    if feat_cols_in_cache:
+        cached[feat_cols_in_cache] = cached[feat_cols_in_cache].apply(
+            pd.to_numeric, errors="coerce"
+        )
     return cached
 
 

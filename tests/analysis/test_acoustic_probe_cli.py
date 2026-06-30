@@ -282,3 +282,39 @@ def test_cli_no_plots_skips_figures(tmp_path, mini_manifest):
     ])
     assert rc == 0
     assert not (out_dir / "figures").exists()
+
+
+def test_cache_round_trip_preserves_numeric_dtypes(tmp_path):
+    """Regression: a cache CSV round-trip must yield float64 feature columns,
+    so downstream select_dtypes(include='number') sees them as numeric.
+    """
+    from src.analysis.acoustic_probe import _load_or_init_cache, CACHE_METADATA_COLUMNS
+    from src.analysis.acoustic_features import feature_columns
+    import pandas as pd
+
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+
+    feat_cols = feature_columns(with_f0=False)
+    expected_columns = CACHE_METADATA_COLUMNS + feat_cols
+
+    # Write a synthetic cache with all-float feature values
+    rows = [
+        {col: ("bonafide_0" if col == "sample_id"
+               else "train" if col == "split"
+               else "real" if col == "source_folder"
+               else "original" if col == "provider"
+               else 0 if col == "audio_label_binary"
+               else 0.5)
+         for col in expected_columns}
+    ]
+    pd.DataFrame(rows, columns=expected_columns).to_csv(
+        out_dir / "acoustic_features.csv", index=False
+    )
+
+    loaded = _load_or_init_cache(out_dir, expected_columns, force=False)
+    for col in feat_cols:
+        assert pd.api.types.is_numeric_dtype(loaded[col]), (
+            f"feature column {col!r} should be numeric after cache reload, "
+            f"got dtype {loaded[col].dtype}"
+        )

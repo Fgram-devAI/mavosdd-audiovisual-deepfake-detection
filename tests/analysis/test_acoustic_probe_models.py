@@ -112,3 +112,44 @@ def test_loeo_matrix_one_engine_emits_degenerate_row():
     assert len(out) == 1
     assert out[0]["engine"] == "E1"
     assert out[0].get("skipped") == "degenerate_one_engine"
+
+
+def test_loeo_matrix_empty_train_emits_skip_row():
+    """Engine whose held-out train spoof set is empty must emit {skipped: empty_train}.
+
+    We build a 2-engine fixture where E1 rows only appear in val and E2 rows
+    only appear in train.  When the loop holds E1 out:
+      train_spoof = spoof[provider != E1 AND split == train] = E2-train  → non-empty
+      val_spoof   = spoof[provider == E1 AND split == val]   = E1-val    → non-empty
+    so E1 does NOT hit empty_train here.
+
+    The correct trigger is: when E2 is held out, the remaining training spoof is
+      train_spoof = spoof[provider != E2 AND split == train] = empty  (E1 has no train rows)
+    So we assert E2's result has skipped == "empty_train".
+    """
+    from src.analysis.acoustic_probe_models import loeo_matrix
+
+    rng = np.random.default_rng(42)
+    rows = []
+    # E1 spoof: val split only (no train rows for E1).
+    # E2 spoof: train split only (no val rows for E2).
+    # When E2 is held out: train_spoof = E1-train = empty → skipped: empty_train.
+    for split, engine, label, n in [
+        ("val",   "E1", 1, 10),   # E1 exists only in val
+        ("train", "E2", 1, 20),   # E2 exists only in train
+        ("train", "bonafide", 0, 20),
+        ("val",   "bonafide", 0, 10),
+    ]:
+        for _ in range(n):
+            rows.append({
+                "split": split,
+                "provider": "original" if label == 0 else engine,
+                "audio_label_binary": label,
+                "f0": float(rng.normal(+1.0 if label == 1 else -1.0)),
+            })
+    df = pd.DataFrame(rows)
+    out = loeo_matrix(df, feature_cols=["f0"], seed=42)
+    by_engine = {r["engine"]: r for r in out}
+    # E2 held out → train_spoof is empty (only E1 is left, and E1 has no train rows)
+    assert "E2" in by_engine
+    assert by_engine["E2"].get("skipped") == "empty_train"

@@ -63,8 +63,14 @@ def evaluate(
 ) -> dict:
     scores = model.predict_proba(X_val)[:, 1]
     preds = (scores >= 0.5).astype(int)
-    roc_auc = float(roc_auc_score(y_val, scores))
-    eer, eer_thresh = _eer_from_scores(y_val, scores)
+    try:
+        roc_auc = float(roc_auc_score(y_val, scores))
+    except ValueError:
+        roc_auc = float("nan")
+    try:
+        eer, eer_thresh = _eer_from_scores(y_val, scores)
+    except ValueError:
+        eer, eer_thresh = float("nan"), float("nan")
     f1 = float(f1_score(y_val, preds, zero_division=0))
     precision = float(precision_score(y_val, preds, zero_division=0))
     recall = float(recall_score(y_val, preds, zero_division=0))
@@ -150,6 +156,10 @@ def loeo_matrix(
         val_spoof = spoof[(spoof["provider"] == held) & (spoof["split"] == "val")]
         val_bona = bonafide[bonafide["split"] == "val"]
 
+        if len(train_spoof) == 0 or len(train_bona) == 0:
+            results.append({"engine": held, "skipped": "empty_train"})
+            continue
+
         if len(val_spoof) == 0 or len(val_bona) == 0:
             results.append({"engine": held, "skipped": "empty_val"})
             continue
@@ -168,7 +178,10 @@ def loeo_matrix(
             auc = float(roc_auc_score(y_val, scores))
         except ValueError:
             auc = float("nan")
-        eer, _ = _eer_from_scores(y_val, scores)
+        try:
+            eer, _ = _eer_from_scores(y_val, scores)
+        except ValueError:
+            eer = float("nan")
 
         results.append({
             "engine": held,
