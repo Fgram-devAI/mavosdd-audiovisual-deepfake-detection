@@ -125,6 +125,13 @@ def _load_or_init_cache(
             f"only_in_request={sorted(only_expected)}). "
             "Pass --force to recompute, or point --out-dir at a clean directory."
         )
+    # Convert numeric columns to float to preserve dtype across CSV round-trip
+    for col in cached.columns:
+        if col not in CACHE_METADATA_COLUMNS:
+            try:
+                cached[col] = cached[col].astype(float)
+            except (ValueError, TypeError):
+                pass  # skip if conversion fails
     return cached
 
 
@@ -177,10 +184,19 @@ def _extract_features_resumable(
             )
 
     if new_rows or not (out_dir / "acoustic_features.csv").exists():
+        new_df = pd.DataFrame(new_rows, columns=expected_columns)
+        # Convert feature columns to float to preserve dtype
+        for col in feat_cols:
+            if col in new_df.columns:
+                new_df[col] = pd.to_numeric(new_df[col], errors='coerce')
         cache = pd.concat(
-            [cache, pd.DataFrame(new_rows, columns=expected_columns)],
+            [cache, new_df],
             ignore_index=True,
         )
+        # Ensure cache has correct dtypes before writing
+        for col in feat_cols:
+            if col in cache.columns:
+                cache[col] = pd.to_numeric(cache[col], errors='coerce')
         _atomic_write_csv(cache[expected_columns], out_dir / "acoustic_features.csv")
     # Always rewrite failures CSV so a clean run with zero failures produces an
     # empty-but-present CSV.
@@ -199,10 +215,21 @@ def _flush_cache_and_failures(
     expected_columns: list[str],
     out_dir: Path,
 ) -> None:
+    new_df = pd.DataFrame(new_rows, columns=expected_columns)
+    # Infer feature columns by removing metadata columns
+    feat_cols = [c for c in expected_columns if c not in CACHE_METADATA_COLUMNS]
+    # Convert feature columns to float to preserve dtype
+    for col in feat_cols:
+        if col in new_df.columns:
+            new_df[col] = pd.to_numeric(new_df[col], errors='coerce')
     snapshot = pd.concat(
-        [cache, pd.DataFrame(new_rows, columns=expected_columns)],
+        [cache, new_df],
         ignore_index=True,
     )
+    # Ensure snapshot has correct dtypes before writing
+    for col in feat_cols:
+        if col in snapshot.columns:
+            snapshot[col] = pd.to_numeric(snapshot[col], errors='coerce')
     _atomic_write_csv(snapshot[expected_columns], out_dir / "acoustic_features.csv")
     _atomic_write_csv(
         pd.DataFrame(all_failures, columns=["sample_id", "audio_path", "reason"]),
@@ -303,8 +330,92 @@ def _make_plots(
     feature_cols: list[str],
     out_dir: Path,
 ) -> None:
-    """Filled in by Task 8."""
-    return None
+    """Generate matplotlib figures to out_dir/figures/."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import numpy as np
+
+    if len(features) == 0 or not default_results:
+        return None
+
+    figs_dir = out_dir / "figures"
+    figs_dir.mkdir(parents=True, exist_ok=True)
+
+    def _hist_by_label(col: str, filename: str, title: str) -> None:
+        fig, ax = plt.subplots(figsize=(6, 4))
+        for label, label_name in [(0, "bonafide"), (1, "spoof")]:
+            slice_ = features.loc[features["audio_label_binary"] == label, col].dropna()
+            if len(slice_) == 0:
+                continue
+            ax.hist(slice_, bins=30, alpha=0.5, label=label_name)
+        ax.set_xlabel(col)
+        ax.set_ylabel("count")
+        ax.set_title(title)
+        ax.legend()
+        fig.tight_layout()
+        fig.savefig(figs_dir / filename, dpi=120)
+        plt.close(fig)
+
+    _hist_by_label("rms", "rms_by_label.png", "RMS by label")
+    _hist_by_label("silence_ratio", "silence_ratio_by_label.png", "Silence ratio by label")
+    _hist_by_label(
+        "spectral_centroid_mean",
+        "spectral_centroid_by_label.png",
+        "Spectral centroid mean by label",
+    )
+
+    # Correlation heatmap
+    corr = features[feature_cols].corr()
+    fig, ax = plt.subplots(figsize=(8, 7))
+    im = ax.imshow(corr.values, vmin=-1.0, vmax=1.0, cmap="coolwarm")
+    ax.set_xticks(range(len(feature_cols)))
+    ax.set_yticks(range(len(feature_cols)))
+    ax.set_xticklabels(feature_cols, rotation=90, fontsize=6)
+    ax.set_yticklabels(feature_cols, fontsize=6)
+    ax.set_title("Feature correlation")
+    fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+    fig.tight_layout()
+    fig.savefig(figs_dir / "feature_correlation_heatmap.png", dpi=120)
+    plt.close(fig)
+
+    # ROC curves
+    val = features[features["split"] == "val"]
+    y_val = val["audio_label_binary"].to_numpy().astype(int)
+    for tag, key, filename in (("LR", "lr", "roc_lr.png"), ("RF", "rf", "roc_rf.png")):
+        eval_ = default_results.get(key, {})
+        scores = eval_.get("scores")
+        if scores is None or len(scores) != len(y_val):
+            continue
+        from sklearn.metrics import roc_curve
+
+        fpr, tpr, _ = roc_curve(y_val, np.asarray(scores))
+        fig, ax = plt.subplots(figsize=(5, 5))
+        ax.plot(fpr, tpr, label=f"{tag} AUC={eval_['roc_auc']:.3f}")
+        ax.plot([0, 1], [0, 1], "k--", alpha=0.5)
+        ax.set_xlabel("False positive rate")
+        ax.set_ylabel("True positive rate")
+        ax.set_title(f"{tag} ROC (val)")
+        ax.legend()
+        fig.tight_layout()
+        fig.savefig(figs_dir / filename, dpi=120)
+        plt.close(fig)
+
+    # Per-feature LR bar chart
+    sweep = default_results.get("per_feature_lr", [])
+    if sweep:
+        names = [r["feature"] for r in sweep]
+        aucs = [r["val_roc_auc"] for r in sweep]
+        fig, ax = plt.subplots(figsize=(7, max(3, 0.25 * len(names))))
+        ax.barh(range(len(names)), aucs)
+        ax.set_yticks(range(len(names)))
+        ax.set_yticklabels(names, fontsize=7)
+        ax.invert_yaxis()
+        ax.set_xlabel("val ROC-AUC")
+        ax.set_title("Per-feature LR sweep")
+        fig.tight_layout()
+        fig.savefig(figs_dir / "per_feature_lr_auc_bar.png", dpi=120)
+        plt.close(fig)
 
 
 def main(argv: list[str] | None = None) -> int:

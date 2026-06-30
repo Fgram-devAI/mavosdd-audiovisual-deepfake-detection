@@ -246,3 +246,39 @@ def test_cli_loeo_flag_runs_per_engine_probe(tmp_path, mini_manifest):
     for row in meta["loeo"]:
         # Either a real metric row or a documented skip reason.
         assert ("val_roc_auc" in row) or (row.get("skipped") in {"empty_val", "degenerate_one_engine"})
+
+
+def test_cli_writes_figures_by_default(tmp_path, mini_manifest):
+    from src.analysis.acoustic_probe import main
+
+    out_dir = tmp_path / "out"
+    rc = main([
+        "--manifest", str(mini_manifest),
+        "--out-dir", str(out_dir),
+    ])
+    assert rc == 0
+    figs = out_dir / "figures"
+    assert figs.is_dir()
+    for name in (
+        "rms_by_label.png",
+        "silence_ratio_by_label.png",
+        "spectral_centroid_by_label.png",
+        "feature_correlation_heatmap.png",
+        "roc_lr.png",
+        "roc_rf.png",
+        "per_feature_lr_auc_bar.png",
+    ):
+        assert (figs / name).exists(), name
+
+
+def test_cli_no_plots_skips_figures(tmp_path, mini_manifest):
+    from src.analysis.acoustic_probe import main
+
+    out_dir = tmp_path / "out"
+    rc = main([
+        "--manifest", str(mini_manifest),
+        "--out-dir", str(out_dir),
+        "--no-plots",
+    ])
+    assert rc == 0
+    assert not (out_dir / "figures").exists()
