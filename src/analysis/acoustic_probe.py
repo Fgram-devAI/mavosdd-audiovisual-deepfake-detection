@@ -211,16 +211,79 @@ def _flush_cache_and_failures(
 
 
 def _run_summaries(features: pd.DataFrame, out_dir: Path) -> None:
-    """Filled in by Task 6."""
-    # Placeholder so Task 5 tests still produce a usable JSON. No-op here.
-    return None
+    """Compute and write summary statistics grouped by label, provider, and source folder."""
+    if len(features) == 0:
+        return None
+    numeric_cols = features.select_dtypes(include="number").columns.tolist()
+    # We summarize the numeric feature columns only, not the label column itself.
+    numeric_cols = [c for c in numeric_cols if c != "audio_label_binary"]
+    agg = ["mean", "std", "median", lambda s: s.quantile(0.05), lambda s: s.quantile(0.95)]
+    rename = {"<lambda_0>": "p5", "<lambda_1>": "p95"}
+
+    def _do(group_cols: list[str], filename: str) -> None:
+        if any(c not in features.columns for c in group_cols):
+            return
+        summary = features.groupby(group_cols)[numeric_cols].agg(agg)
+        # collapse multiindex columns to flat names like "rms_mean", "rms_p5", ...
+        summary.columns = [
+            f"{col}_{rename.get(stat, stat)}" for col, stat in summary.columns
+        ]
+        summary = summary.reset_index()
+        _atomic_write_csv(summary, out_dir / filename)
+
+    _do(["audio_label_binary"], "summary_by_label.csv")
+    _do(["audio_label_binary", "provider"], "summary_by_label_provider.csv")
+    _do(["source_folder"], "summary_by_source_folder.csv")
+
+
+def _split_arrays(
+    features: pd.DataFrame, feature_cols: list[str], split: str,
+) -> tuple:
+    """Extract X, y, providers for a given split."""
+    import numpy as np
+    sub = features[features["split"] == split]
+    X = sub[feature_cols].to_numpy()
+    y = sub["audio_label_binary"].to_numpy().astype(int)
+    providers = sub["provider"].to_numpy()
+    return X, y, providers
 
 
 def _run_default_probes(
     features: pd.DataFrame, feature_cols: list[str], *, seed: int,
 ) -> dict:
-    """Filled in by Task 6."""
-    return {}
+    """Train default probes (LR, RF, per-feature LR sweep) and return eval dicts."""
+    import numpy as np
+    from src.analysis.acoustic_probe_models import (
+        evaluate,
+        fit_logistic,
+        fit_random_forest,
+        per_feature_lr_sweep,
+    )
+
+    if len(features) == 0:
+        return {}
+    X_train, y_train, _ = _split_arrays(features, feature_cols, "train")
+    X_val, y_val, providers_val = _split_arrays(features, feature_cols, "val")
+    if len(X_train) == 0 or len(X_val) == 0:
+        return {"skipped": "empty_split"}
+    if len(np.unique(y_train)) < 2 or len(np.unique(y_val)) < 2:
+        return {"skipped": "single_class"}
+
+    lr = fit_logistic(X_train, y_train, seed=seed)
+    rf = fit_random_forest(X_train, y_train, seed=seed)
+
+    lr_eval = evaluate(lr, X_val, y_val, providers_val=providers_val)
+    rf_eval = evaluate(rf, X_val, y_val, providers_val=providers_val)
+    rf_eval["feature_importances"] = {
+        name: float(score)
+        for name, score in zip(feature_cols, rf.feature_importances_)
+    }
+
+    sweep = per_feature_lr_sweep(
+        X_train, y_train, X_val, y_val, feature_cols, seed=seed,
+    )
+
+    return {"lr": lr_eval, "rf": rf_eval, "per_feature_lr": sweep}
 
 
 def _run_loeo(

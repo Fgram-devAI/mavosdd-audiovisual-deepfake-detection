@@ -203,3 +203,27 @@ def test_cli_fails_loud_on_missing_manifest_columns(tmp_path):
             "--out-dir", str(out_dir),
             "--no-plots",
         ])
+
+
+def test_cli_writes_summary_tables_and_default_probes(tmp_path, mini_manifest):
+    from src.analysis.acoustic_probe import main
+
+    out_dir = tmp_path / "out"
+    rc = main([
+        "--manifest", str(mini_manifest),
+        "--out-dir", str(out_dir),
+        "--no-plots",
+    ])
+    assert rc == 0
+    for name in ("summary_by_label.csv", "summary_by_label_provider.csv",
+                 "summary_by_source_folder.csv"):
+        assert (out_dir / name).exists(), name
+
+    meta = json.loads((out_dir / "probe_metrics.json").read_text())
+    dp = meta["default_probes"]
+    assert "lr" in dp and "rf" in dp and "per_feature_lr" in dp
+    assert "roc_auc" in dp["lr"] and "roc_auc" in dp["rf"]
+    assert dp["lr"]["roc_auc"] > 0.9  # tone vs noise is trivially separable
+    assert isinstance(dp["per_feature_lr"], list)
+    assert len(dp["per_feature_lr"]) > 5  # at least the core features
+    assert "feature_importances" in dp["rf"]
