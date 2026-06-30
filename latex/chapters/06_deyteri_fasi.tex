@@ -1,0 +1,344 @@
+\chapter{Δεύτερη Φάση: Επανασχεδιασμός}
+\label{chap:deyteri-fasi}
+
+Το παρόν κεφάλαιο παρουσιάζει τον επανασχεδιασμό του συστήματος
+που ακολούθησε τη διάγνωση του mel-CNN baseline (Κεφ.~\ref{chap:protes-dokimes}).
+Η κεντρική αλλαγή είναι η μετάβαση από raw mel-spectrograms
+σε frozen pretrained embeddings που αποθηκεύονται σε serialized feature stores,
+και η ανάπτυξη μιας late-fusion αρχιτεκτονικής που συνδυάζει
+τα audio και visual χαρακτηριστικά.
+Στο τέλος του κεφαλαίου παρουσιάζονται τα αποτελέσματα της Phase~5
+και τρία έντιμα συμπεράσματα για το τι πράγματι έμαθε το σύστημα.
+
+% ============================================================
+\section{Από mel-CNN σε Frozen Feature Stores}
+\label{sec:mel-to-feature-stores}
+% ============================================================
+
+Η μετάβαση από το mel-CNN baseline σε frozen feature stores δεν ήταν
+αρχιτεκτονική επιλογή αισθητική — ήταν διαγνωστικά αναγκαία.
+Τρεις λόγοι συνέτειναν σε αυτή την απόφαση.
+
+\paragraph{Αναπαραγωγιμότητα.}
+Ένα frozen backbone παράγει ντετερμινιστικά τα ίδια embeddings
+κάθε φορά που εκτελείται σε δεδομένο αρχείο ήχου.
+Η εξαγωγή γίνεται \emph{μία φορά} και αποθηκεύεται ως \codeid{.npy}·
+όλα τα πειράματα που ακολουθούν διαβάζουν αποκλειστικά από αυτά τα αρχεία,
+χωρίς ποτέ να αγγίζουν το raw audio ή video στον training loop.
+Αυτό εξαλείφει μια ολόκληρη κατηγορία non-determinism:
+διαφορετικές εκτελέσεις εκπαίδευσης λαμβάνουν κατ' ανάγκη τα ίδια features.
+
+\paragraph{Transfer learning με ελάχιστο trainable cost.}
+Τα backbones \codeid{facebook/wav2vec2-base-960h},
+\codeid{microsoft/wavlm-base} και \codeid{facebook/hubert-base-ls960}
+έχουν εκπαιδευτεί σε εκατοντάδες έως χιλιάδες ώρες ομιλίας.
+Οι αναπαραστάσεις που παράγουν — 768-d διανύσματα ανά χρονικό frame —
+περιέχουν ήδη πλούσια φωνητική πληροφορία.
+Ένας απλός MLP head πάνω σε αυτά τα embeddings αρκεί για τον ταξινομητή,
+κρατώντας τον αριθμό εκπαιδεύσιμων παραμέτρων κατά πολύ κάτω
+από το project budget των 2\,000\,000.
+Τα backbones παραμένουν \textbf{πλήρως παγωμένα} (frozen) καθ' όλη
+τη διάρκεια της εκπαίδευσης· δεν εφαρμόζεται fine-tuning σε κανένα στάδιο.
+
+\paragraph{Αποσύζευξη εξαγωγής και εκπαίδευσης.}
+Η αποθήκευση features ως \codeid{.npy} / \codeid{.npz} στους καταλόγους
+\codeid{data/features/audio\_\{backend\}/} και \codeid{data/features/lips/}
+αποσυνδέει το computationally ακριβό βήμα εξαγωγής
+(GPU-bound, εκτελείται μία φορά) από το ελαφρύ βήμα εκπαίδευσης
+(CPU-bound, επαναλαμβάνεται σε κάθε ablation).
+Η κλάση \codeid{src/data/feature\_store.py} αποτελεί τον \emph{κανονικό}
+loader για όλα τα πειράματα Phase~5+:
+επαληθεύεται με \codeid{python -m src.data.feature\_store --validate}
+πριν από κάθε εκπαίδευση.
+
+% ============================================================
+\section{Late-Fusion Αρχιτεκτονική}
+\label{sec:late-fusion-arch}
+% ============================================================
+
+Η αρχιτεκτονική του συστήματος υλοποιείται στο
+\codeid{src/models/late\_fusion.py} ως η κλάση \codeid{LateFusionClassifier}.
+Αποτελείται από τρία ανεξάρτητα στοιχεία:
+ένα audio head, ένα visual head και ένα fusion MLP.
+Κάθε στοιχείο ενεργοποιείται ανάλογα με το επιλεγμένο
+\codeid{modality} (\codeid{"audio"}, \codeid{"visual"}, ή \codeid{"fusion"}).
+
+% ------------------------------------------------------------
+\subsection{Audio Head}
+\label{subsec:audio-head}
+% ------------------------------------------------------------
+
+Το audio head (\codeid{AudioHead}) δέχεται ως είσοδο
+ένα tensor σχήματος \((B,\ T,\ 768)\),
+όπου \(B\) είναι το batch size,
+\(T\) το πλήθος χρονικών frames που παράγει το frozen backbone
+για παράθυρο 4{,}0~s,
+και 768 η διάσταση εξόδου κάθε backbone.
+
+Το πρώτο βήμα είναι \textbf{temporal mean pooling}:
+τα \(T\) frame-level embeddings αθροίζονται και διαιρούνται
+με \(T\), παράγοντας ένα \((B,\ 768)\) tensor.
+Στη συνέχεια εφαρμόζεται ένα small MLP:
+\[
+  \text{Linear}(768 \to 256) \to \text{BatchNorm1d}(256) \to \text{ReLU}
+  \to \text{Dropout}(0{,}3) \to \text{Linear}(256 \to 128) \to \text{ReLU}
+\]
+Η έξοδός του είναι ένα \((B,\ 128)\) tensor.
+Ο συνολικός αριθμός εκπαιδεύσιμων παραμέτρων του audio head
+ανέρχεται σε \textbf{περίπου 328\,000}.
+
+% ------------------------------------------------------------
+\subsection{Visual Head (BiGRU)}
+\label{subsec:visual-head}
+% ------------------------------------------------------------
+
+Το visual head (\codeid{VisualHead}) δέχεται ένα tensor
+σχήματος \((B,\ 20,\ 84)\) — ακολουθία 20 frames lip χαρακτηριστικών —
+και ένα \textbf{validity mask} \((B,\ 20)\),
+όπου κάθε θέση λαμβάνει τιμή 1{,}0 αν ανιχνεύτηκε πρόσωπο στο αντίστοιχο frame,
+0{,}0 αλλιώς (ποτέ silent drop — οι απουσίες καταγράφονται μέσω mask).
+
+Τα 84 χαρακτηριστικά ανά frame προκύπτουν από τη
+MediaPipe FaceMesh εξαγωγή (20 frames στα 5~fps × 4{,}0~s):
+40 lip landmark σημεία, κάθε ένα ως \((x, y)\) ομαλοποιημένες συντεταγμένες
+(κεντραρισμένες στο mean των landmarks, κανονικοποιημένες ως προς
+τη διαγώνιο του lip bounding box) → \(40 \times 2 = 80\) διαστάσεις,
+συν un-normalized bounding box \((x_0,\ y_0,\ w,\ h)\) → σύνολο 84.
+
+Η ακολουθία επεξεργάζεται από έναν 2-layer
+\textbf{bidirectional GRU} (BiGRU) με \codeid{hidden=128}
+και \codeid{dropout=0{,}3}.
+Η BiGRU προτιμήθηκε έναντι LSTM λόγω μικρότερου αριθμού παραμέτρων
+για ίδιο hidden size.
+Μετά το BiGRU, εφαρμόζεται \textbf{mask-weighted mean pooling}:
+\[
+  \mathbf{h}_{\text{pool}} = \frac{\sum_{t} m_t \cdot \mathbf{h}_t}{\max\!\left(\sum_t m_t,\ 1\right)}
+\]
+όπου \(m_t \in \{0, 1\}\) το mask και \(\mathbf{h}_t \in \mathbb{R}^{256}\)
+η bidirectional έξοδος στο frame \(t\).
+Τέλος, εφαρμόζεται projection:
+\[
+  \text{Linear}(256 \to 128) \to \text{ReLU} \to \text{Dropout}(0{,}3)
+\]
+παράγοντας έξοδο \((B,\ 128)\).
+Ο συνολικός αριθμός εκπαιδεύσιμων παραμέτρων του visual head
+ανέρχεται σε \textbf{περίπου 340\,000}.
+
+% ------------------------------------------------------------
+\subsection{Fusion: Concat + MLP}
+\label{subsec:fusion-head}
+% ------------------------------------------------------------
+
+Στο fusion mode, οι έξοδοι των δύο heads (\(128\text{-dim}\) η κάθε μία)
+\textbf{συνδυάζονται με απλή concatenation}:
+\[
+  \mathbf{z} = [\mathbf{h}_{\text{audio}}\ \|\ \mathbf{h}_{\text{visual}}]
+  \in \mathbb{R}^{256}
+\]
+Στη συνέχεια, ένα 2-layer fusion MLP παράγει τον τελικό logit:
+\[
+  \text{Linear}(256 \to 64) \to \text{ReLU} \to \text{Dropout}(0{,}3)
+  \to \text{Linear}(64 \to 1) \to \text{logit}
+\]
+Η επιλογή concat fusion έναντι cross-attention έγινε συνειδητά
+για λόγους απλότητας εντός του parameter budget.
+Ωστόσο, αυτή η επιλογή φέρει ένα δομικό περιορισμό:
+το concat fusion \textbf{δεν μπορεί να μοντελοποιήσει
+cross-modal interaction}.
+Ο ταξινομητής βλέπει δύο ανεξάρτητα feature vectors —
+δεν μπορεί να ελέγξει αν η κίνηση των χειλιών συμβαδίζει
+με το audio signal.
+Αυτός ο περιορισμός επιβεβαιώθηκε εμπειρικά στα αποτελέσματα της Phase~5
+(βλ. Ενότ.~\ref{sec:phase5-honest-reads}).
+
+Ο συνολικός αριθμός εκπαιδεύσιμων παραμέτρων του πλήρους
+fusion μοντέλου ανέρχεται σε \textbf{περίπου 700\,000},
+εντός του project budget.
+
+% ============================================================
+\section{Param Budget και Frozen Backbones}
+\label{sec:param-budget}
+% ============================================================
+
+Μια δεσμευτική αρχιτεκτονική απαίτηση του project
+είναι ο περιορισμός των εκπαιδεύσιμων παραμέτρων σε
+\textbf{κάτω από 2\,000\,000 (2M)},
+αποκλείοντας ρητά το fine-tuning οποιουδήποτε backbone.
+
+\begin{table}[ht]
+  \centering
+  \begin{tabular}{lrl}
+    \toprule
+    Modality & Εκπαιδεύσιμες παράμετροι & Σημειώσεις \\
+    \midrule
+    audio   & $\sim$328\,000 & MLP head μόνο· backbone frozen \\
+    visual  & $\sim$340\,000 & BiGRU + projection \\
+    fusion  & $\sim$700\,000 & audio head + visual head + fusion MLP \\
+    \midrule
+    Wav2Vec2 backbone & 94\,400\,000 & frozen, δεν εκπαιδεύεται \\
+    WavLM backbone    & 94\,400\,000 & frozen, δεν εκπαιδεύεται \\
+    HuBERT backbone   & 94\,400\,000 & frozen, δεν εκπαιδεύεται \\
+    \bottomrule
+  \end{tabular}
+  \caption{Αριθμός εκπαιδεύσιμων παραμέτρων ανά configuration.
+           Τα frozen backbones αναφέρονται για πληρότητα —
+           οι παράμετροί τους δεν συμμετέχουν στη βελτιστοποίηση.}
+  \label{tab:param-budget}
+\end{table}
+
+Η εκπαίδευση αποτυγχάνει ρητά αν αυτό το assert παραβιαστεί.
+
+Τα υπόλοιπα βασικά hyperparameters εκπαίδευσης προέρχονται
+από το \codeid{config/default.yaml}:
+\begin{itemize}
+  \item Optimizer: AdamW, \codeid{lr}=1e-4, \codeid{weight\_decay}=1e-2
+  \item Loss: \codeid{BCEWithLogitsLoss}
+  \item \codeid{batch\_size}: 32, \codeid{max\_epochs}: 50
+  \item Early stop: patience 7 εποχές βάσει val \AUC{}
+  \item \textbf{Seed: 42 παντού} — στον Python \codeid{random},
+        NumPy, PyTorch, και στον DataLoader worker init
+  \item \textbf{Normalization statistics υπολογισμένα αποκλειστικά
+        από το train split}: η \codeid{fit\_normalization\_stats()}
+        καλείται μόνο σε train δεδομένα·
+        τα ίδια statistics εφαρμόζονται (χωρίς επανυπολογισμό)
+        σε val και test
+\end{itemize}
+
+% ============================================================
+\section{Phase 5 Validation Results}
+\label{sec:phase5-results}
+% ============================================================
+
+Τα αποτελέσματα παρουσιάζονται για τρεις configurations:
+audio-only, visual-only, και fusion.
+Τα νούμερα προέρχονται από το
+\codeid{reports/val\_eval/all\_checkpoints\_val\_metrics.json}
+και αντιστοιχούν στο \textbf{validation split} μετά
+codec-match και voice-disjoint διόρθωση.
+\textbf{Το test split δεν αξιολογήθηκε σε αυτό το στάδιο}
+— παραμένει κλειδωμένο για τη Phase~6.
+
+\begin{table}[ht]
+  \centering
+  \begin{tabular}{lccc}
+    \toprule
+    Modality & \codeid{wav2vec2} & \codeid{wavlm} & \codeid{hubert} \\
+    \midrule
+    audio   & 0.9508 (\EER\ 0.106) & 1.0000 (\EER\ 0.006) & 1.0000 (\EER\ 0.000) \\
+    fusion  & 0.9509 (\EER\ 0.107) & 1.0000 (\EER\ 0.000) & 1.0000 (\EER\ 0.000) \\
+    visual  & 0.5688 (\EER\ 0.433) & --- & --- \\
+    \bottomrule
+  \end{tabular}
+  \caption{Phase 5 validation \AUC{} (μετά codec-match + voice-disjoint).}
+  \label{tab:phase5_val}
+\end{table}
+
+Σημείωση: στο \codeid{all\_checkpoints\_val\_metrics.json},
+η τιμή \AUC{} για το \codeid{wavlm} audio εμφανίζεται ως
+\codeid{0.9999692...} (αντί 1{,}0000 που αναφέρεται στον Πίνακα~\ref{tab:phase5_val}).
+Η στρογγυλοποίηση σε 4 δεκαδικά ψηφία δίνει 1{,}0000.
+Οι τιμές του πίνακα ακολουθούν αυτή τη στρογγυλοποίηση
+για συνέπεια με τα downstream κεφάλαια.
+
+% ============================================================
+\section{Τρία Έντιμα Συμπεράσματα από το Phase 5}
+\label{sec:phase5-honest-reads}
+% ============================================================
+
+Τα αριθμητικά αποτελέσματα της Phase~5 δεν πρέπει να ερμηνευθούν
+ως επιτυχία χωρίς επιφυλάξεις.
+Η ανάλυση αποκαλύπτει τρία δομικά ευρήματα που περιορίζουν
+σημαντικά την ερμηνεία των αποτελεσμάτων.
+
+% ------------------------------------------------------------
+\subsection{Saturation σε WavLM και HuBERT}
+\label{subsec:saturation}
+% ------------------------------------------------------------
+
+Τόσο το \codeid{wavlm} όσο και το \codeid{hubert} φτάνουν
+val \AUC{} = 1{,}0 — τέλειος διαχωρισμός στο validation split —
+ακόμα και μετά τη διόρθωση του codec leak και του voice straddling.
+
+Αυτό \textbf{δεν ερμηνεύεται ως απόδειξη ότι το σύστημα
+ανιχνεύει deepfakes}.
+Ο εναπομένων shortcut μετά τις διορθώσεις είναι
+\textbf{per-TTS-engine φασματικό fingerprinting}:
+κάθε TTS generator
+(\engineName{ElevenLabs}, \engineName{Google~TTS})
+αφήνει συστηματικά ίχνη — vocoder artifacts, HF residuals,
+bandwidth ceilings, silence padding —
+που είναι αναλλοίωτα ως προς φωνή, codec και κείμενο.
+
+Στην πράξη, ο εκπαιδευμένος head λειτουργεί ως
+\emph{δυο-κλασικός TTS-engine ανιχνευτής}
+(ElevenLabs ή Google vs. MAVOS-DD bonafide),
+όχι ως γενικευμένος deepfake ανιχνευτής.
+Ένας νέος TTS engine που δεν εμφανίστηκε στο train
+θα αποφύγει πιθανώς την ανίχνευση —
+η Phase~6+ αντιμετωπίζει αυτό προσθέτοντας \engineName{OpenAI~TTS}
+ως τρίτο engine.
+
+% ------------------------------------------------------------
+\subsection{Visual Collapse σε Constant Predictor}
+\label{subsec:visual-collapse}
+% ------------------------------------------------------------
+
+Το visual-only μοντέλο (BiGRU πάνω σε lip landmarks)
+εμφανίζει confusion matrix:
+\[
+  \text{tn} = 0,\quad \text{fp} = 150,\quad \text{fn} = 0,\quad \text{tp} = 217
+\]
+Δηλαδή ο ταξινομητής χαρακτηρίζει \emph{κάθε} δείγμα ως spoof.
+Η val \AUC{} = 0{,}5688 επιβεβαιώνει ότι τα scores δεν
+διαχωρίζουν τις κλάσεις σε κανένα threshold:
+το μοντέλο κατέρρευσε στον constant predictor.
+
+\textbf{Δομική αιτία:}
+στην 1\,000-video cap, το visual manifest αντιστοίχισε
+bonafide και TTS-spoof εγγραφές από το \emph{ίδιο source video},
+μοιραζόμενες το ίδιο \codeid{.npz} αρχείο lip features.
+Ένας BiGRU που καλείται να διακρίνει δύο εγγραφές
+των οποίων η είσοδος είναι byte-identical
+δεν μπορεί να κάνει καλύτερα από class-frequency bias.
+Με 217 positives και 150 negatives στο validation split,
+το "πάντα spoof" βελτιστοποιεί τη binary cross-entropy.
+
+Ο structural fix για τη Phase~6+ είναι η προσθήκη
+visual-fake sources (\engineName{LivePortrait}, \engineName{Sonic}),
+όπου τα lip features της bonafide εγγραφής
+\emph{πράγματι διαφέρουν} από τα αντίστοιχα spoof lip features.
+
+% ------------------------------------------------------------
+\subsection{Fusion = Audio-Only}
+\label{subsec:fusion-equals-audio}
+% ------------------------------------------------------------
+
+Η σύγκριση των audio και fusion αποτελεσμάτων
+στον Πίνακα~\ref{tab:phase5_val} είναι αποκαλυπτική:
+
+\begin{itemize}
+  \item \codeid{wav2vec2} audio: \AUC{} = 0{,}9508
+        vs.\ fusion: \AUC{} = 0{,}9509 (διαφορά $\Delta = 0{,}0001$)
+  \item \codeid{wavlm} audio: \AUC{} = 1{,}0000
+        vs.\ fusion: \AUC{} = 1{,}0000
+  \item \codeid{hubert} audio: \AUC{} = 1{,}0000
+        vs.\ fusion: \AUC{} = 1{,}0000
+\end{itemize}
+
+Το fusion μοντέλο δεν βελτιώνει τίποτα πάνω από το audio-only.
+Η εξήγηση είναι απευθείας συνέπεια του visual collapse:
+το concat fusion αθροίζει απλώς δύο ανεξάρτητα feature vectors —
+αν το ένα branch βρίσκεται στο chance level,
+η ταξινόμηση κληρονομεί το signal του κυρίαρχου branch.
+
+Επιπλέον, το concat fusion \textbf{δεν μπορεί να ανιχνεύσει
+ασυνέπεια μεταξύ audio και video}:
+δεν μαθαίνει «αυτός ο ήχος δεν ταιριάζει με αυτά τα χείλη»,
+αλλά μόνο «αυτά τα δύο feature vectors οδηγούν σε αυτό το logit».
+Η audio-visual lip-sync ανίχνευση (SyncNet-style) ήταν ρητά
+εκτός scope — αναβλήθηκε για μελλοντικό \codeid{feat/av-consistency-head} branch.
+
+Το συμπέρασμα είναι σαφές:
+\textbf{η fusion αρχιτεκτονική Phase~5 είναι ουσιαστικά audio-only},
+και τα Phase~5 αποτελέσματα δεν μπορούν να αξιολογηθούν ως
+αποδεικτικά multimodal deepfake detection.

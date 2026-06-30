@@ -1,0 +1,231 @@
+\chapter{WAV vs MP3 και Codec Matching}
+\label{chap:codec-wav-mp3}
+
+Πριν από κάθε εκπαίδευση, το σύστημα πρέπει να διασφαλίσει ότι
+το format των αρχείων ήχου δεν αποτελεί shortcut για τον ταξινομητή.
+Το παρόν κεφάλαιο τεκμηριώνει το πρόβλημα (100\% συσχέτιση format–label),
+τη λύση (MP3 round-trip του bonafide μέσω \codeid{src/data/codec\_match\_audio.py}),
+και την επέκταση της Phase~6+ για καθαρούς-WAV spoof providers (\engineName{OpenAI~TTS}).
+
+% ============================================================
+\section{Το Πρόβλημα: 100\% Format-Label Correlation}
+\label{sec:format-label-correlation}
+% ============================================================
+
+Τα αρχεία ήχου που εισέρχονται στο pipeline δεν έχουν ομοιόμορφο format.
+Κάθε κλάση εγγραφής αποθηκεύεται σε διαφορετικό codec
+ανάλογα με την πηγή της:
+
+\begin{table}[ht]
+  \centering
+  \begin{tabular}{lll}
+    \toprule
+    Row class & On disk & Why \\
+    \midrule
+    bonafide real & clean 16 kHz PCM WAV & από \texttt{ffmpeg} extract \\
+    ElevenLabs spoof & lossy MP3 44.1k/128k & TTS engine output \\
+    Google spoof & lossy MP3 24k/64k & TTS engine output \\
+    OpenAI spoof & clean WAV & default \texttt{response\_format=wav} \\
+    \bottomrule
+  \end{tabular}
+  \caption{Pre-codec-match format ανά row class.}
+  \label{tab:precodec}
+\end{table}
+
+Η κατανομή του Πίνακα~\ref{tab:precodec} αποκαλύπτει ένα κρίσιμο πρόβλημα:
+ο format του αρχείου ήχου είναι \textbf{100\% συσχετισμένος με την ετικέτα}.
+Κάθε μοντέλο που δέχεται mel-spectrogram ή raw waveform ως είσοδο
+μπορεί θεωρητικά να μάθει να ανιχνεύει τη διαφορά PCM~WAV vs.\ MP3
+αντί για πραγματική deepfake ανίχνευση.
+Μια τέτοια στρατηγική θα έδινε υψηλή ακρίβεια στο training και validation set,
+αλλά θα κατέρρεε σε οποιοδήποτε dataset όπου το TTS output
+είναι clean WAV — ή αντίστροφα, όπου τα bonafide αρχεία
+έχουν περάσει από MP3 επεξεργασία.
+
+Αυτό το φαινόμενο ονομάζεται \textbf{codec leak}:
+ένα τεχνητό αρχείο-format signal διαρρέει στο training loop
+ως ψεύτικο discriminative cue.
+Ακόμα και μετά τη χρήση frozen Wav2Vec2/WavLM/HuBERT embeddings
+αντί για raw mel-spectrograms, το codec history εξακολουθεί
+να αφήνει ίχνη στη φασματική κατανομή των hidden states.
+
+% ============================================================
+\section{Λύση: MP3 Round-Trip του Bonafide}
+\label{sec:mp3-roundtrip}
+% ============================================================
+
+Η λύση είναι να εξομοιωθεί το codec history των bonafide εγγραφών
+με αυτό των spoof εγγραφών.
+Αντί να αφαιρεθεί ο MP3 codec από τα spoof αρχεία
+(αδύνατο — η lossy συμπίεση είναι μη αντιστρέψιμη),
+τα bonafide αρχεία \textbf{round-tripάρονται μέσω MP3}:
+κωδικοποιούνται σε MP3 με τις παραμέτρους ενός native-MP3 spoof provider,
+και αμέσως αποκωδικοποιούνται πίσω σε 16~kHz mono PCM WAV.
+Έτσι κάθε bonafide αρχείο αποκτά κι αυτό codec history,
+και το format του αρχείου παύει να είναι predictive του label.
+
+% ------------------------------------------------------------
+\subsection{Deterministic Codec Sampling}
+\label{subsec:deterministic-codec-sampling}
+% ------------------------------------------------------------
+
+Για κάθε bonafide εγγραφή, ο codec spec που θα χρησιμοποιηθεί
+για το MP3 round-trip επιλέγεται \textbf{ντετερμινιστικά} —
+όχι stochastically — μέσω της συνάρτησης
+\codeid{codec\_for\_bonafide(sample\_id, provider\_weights)}.
+
+Ο αλγόριθμος είναι απλός και αναπαραγώγιμος:
+
+\begin{english}
+\begin{enumerate}
+  \item Υπολόγισε τον SHA-1 hash του \codeid{sample\_id} ως ακέραιο
+        (\codeid{h = int(hashlib.sha1(sample\_id.encode()).hexdigest(), 16)}).
+  \item Πάρε το υπόλοιπο της διαίρεσης με το συνολικό πλήθος
+        native-MP3 spoof εγγραφών:
+        \codeid{point = h \% total}.
+  \item Διάτρεξε τα native-MP3 providers σε ταξινομημένη σειρά
+        (lexicographic, για αναπαραγωγιμότητα),
+        συσσωρεύοντας τα πλήθη τους.
+        Επίστρεψε τον provider για τον οποίο
+        \codeid{point < cum} (cumulative count).
+\end{enumerate}
+\end{english}
+
+Το αποτέλεσμα είναι ότι η marginal κατανομή του codec spec
+πάνω από όλες τις bonafide εγγραφές
+\textbf{συγκλίνει στην κατανομή του native-MP3 spoof corpus},
+ανεξάρτητα από τη σειρά επεξεργασίας των εγγραφών.
+Ο SHA-1 modulo cumulative distribution εξασφαλίζει
+αναπαραγωγιμότητα μεταξύ εκτελέσεων —
+η ανάθεση codec σε κάθε \codeid{sample\_id} δεν αλλάζει ποτέ.
+
+Τα specs αυτά προέκυψαν από \codeid{ffprobe} ανάλυση των on-disk αρχείων
+και είναι σταθερά ανά provider.
+
+% ------------------------------------------------------------
+\subsection{Implementation Details}
+\label{subsec:implementation-details}
+% ------------------------------------------------------------
+
+Η υλοποίηση βρίσκεται στο \codeid{src/data/codec\_match\_audio.py}.
+Η κεντρική συνάρτηση \codeid{process\_row()} χειρίζεται κάθε εγγραφή ως εξής:
+
+\begin{english}
+\begin{enumerate}
+  \item Αν η εγγραφή είναι bonafide ή ανήκει σε \codeid{CLEAN\_WAV\_PROVIDERS}:
+    \begin{enumerate}
+      \item Κάλεσε \codeid{codec\_for\_bonafide()} για να αποκτήσεις
+            \codeid{(provider, sr, bitrate)}.
+      \item Κωδικοποίησε το αρχείο WAV σε MP3 με
+            \codeid{ffmpeg -c:a libmp3lame -ar sr -b:a bitrate}
+            σε ένα temporary directory.
+      \item Αποκωδικοποίησε το MP3 πίσω σε 16~kHz mono PCM WAV
+            (\codeid{ffmpeg -ar 16000 -ac 1 -c:a pcm\_s16le}).
+      \item Διαγράφει το temporary MP3.
+    \end{enumerate}
+  \item Αν η εγγραφή είναι native-MP3 spoof:
+    \begin{enumerate}
+      \item Αποκωδικοποίησε απευθείας το MP3 σε 16~kHz mono PCM WAV,
+            διατηρώντας το υπάρχον codec history.
+    \end{enumerate}
+\end{enumerate}
+\end{english}
+
+Η έξοδος αποθηκεύεται στον κατάλογο
+\codeid{data/audio\_wav\_codec\_matched/\{sample\_id\}.wav}.
+Παράλληλα, γράφεται ένα derived manifest
+(\codeid{data/derived/audio\_spoof\_manifest\_codec\_matched.csv})
+όπου η στήλη \codeid{audio\_path} δείχνει στα νέα WAV αρχεία,
+ώστε τα downstream embedding extractors να μπορούν να τα καταναλώσουν
+χωρίς τροποποίηση.
+
+Ο χειρισμός σφαλμάτων γίνεται per-row:
+αν το \codeid{ffmpeg} αποτύχει για μια εγγραφή,
+η εγγραφή καταγράφεται ως \codeid{failed} και η επεξεργασία συνεχίζεται.
+Αυτό επιτρέπει partial runs χωρίς να διακόπτεται ολόκληρο το pipeline.
+
+% ============================================================
+\section{Phase 6+ Extension: Clean-WAV Spoof Providers}
+\label{sec:clean-wav-extension}
+% ============================================================
+
+% ------------------------------------------------------------
+\subsection{Γιατί το OpenAI Δημιουργεί Νέο Confounder}
+\label{subsec:openai-confounder}
+% ------------------------------------------------------------
+
+Η Phase~6+ εισήγαγε τον \engineName{OpenAI~TTS} ως τρίτο TTS engine.
+Αντίθετα με τα \engineName{ElevenLabs} και \engineName{Google~TTS}
+που παράγουν MP3 by default,
+το \engineName{OpenAI~TTS} χρησιμοποιεί
+\codeid{response\_format=wav} ως προεπιλογή —
+δηλαδή παράγει clean PCM WAV χωρίς MP3 codec history.
+
+Αν εφαρμοζόταν το codec-match \emph{μόνο} στα bonafide αρχεία
+(όπως στην αρχική Phase~4 λύση),
+το \engineName{OpenAI~TTS} θα παρέμενε ο μοναδικός clean-WAV spoof provider.
+Αυτό θα δημιουργούσε έναν νέο codec leak —
+\textbf{αντίστροφης κατεύθυνσης}:
+αντί το μοντέλο να μαθαίνει «clean WAV → bonafide (real)»,
+θα μπορούσε να μάθει «clean WAV → OpenAI (spoof)».
+
+Η φόρμουλα του προβλήματος αλλάζει σημείο,
+αλλά η δομή παραμένει ίδια:
+ένα αρχείο-format signal διαρρέει ως discriminative cue
+αντί για γνήσια deepfake ανίχνευση.
+Η διόρθωση πρέπει να εφαρμοστεί και στις δύο clean-WAV κλάσεις.
+
+% ------------------------------------------------------------
+\subsection{\codeid{CLEAN\_WAV\_PROVIDERS = \{"openai\_tts"\}}}
+\label{subsec:clean-wav-providers}
+% ------------------------------------------------------------
+
+Κάθε spoof εγγραφή της οποίας ο provider ανήκει στο
+\codeid{CLEAN\_WAV\_PROVIDERS} υποβάλλεται στο \textbf{ίδιο MP3 round-trip}
+με τις bonafide εγγραφές.
+Κρίσιμη λεπτομέρεια: το sampling distribution για το codec spec
+\textbf{περιορίζεται αποκλειστικά στα native-MP3 providers}
+(εκείνους που ανήκουν στο \codeid{PROVIDER\_CODEC}).
+Αυτό εξασφαλίζει ότι το marginal codec footprint
+για τα bonafide και τα OpenAI rows
+ταυτίζεται με την κατανομή των native-MP3 providers
+(\engineName{ElevenLabs} + \engineName{Google~TTS}).
+Το αποτέλεσμα: ο codec δεν αποτελεί πλέον predictive signal
+\emph{για καμία} κλάση — ούτε για τα bonafide,
+ούτε για τους native-MP3 spoofs,
+ούτε για τους clean-WAV spoofs.
+
+% ============================================================
+\section{Επαλήθευση στο Πραγματικό Run}
+\label{sec:codec-verification}
+% ============================================================
+
+Η εκτέλεση του \codeid{codec\_match\_audio} στο Phase~6+ manifest
+(4\,149 bonafide + 2\,218 spoof, συνολικά 6\,367 εγγραφές)
+Τα νούμερα αυτά επιβεβαιώνουν τη λογική:
+
+\begin{itemize}
+  \item \textbf{5\,196 εγγραφές round-tripάρουν μέσω MP3}:
+        οι 4\,149 bonafide και οι 1\,047 OpenAI spoof εγγραφές.
+  \item \textbf{2\,218 εγγραφές} (native-MP3 spoof)
+        αποκωδικοποιούνται απευθείας σε 16~kHz WAV χωρίς νέο encoding.
+  \item Το codec spec sampling βαρύνεται
+        673 ElevenLabs vs.\ 498 Google:
+        περίπου 57\% των round-trip εγγραφών
+        λαμβάνουν spec \codeid{(44100, 128k)}
+        και 43\% \codeid{(24000, 64k)}.
+  \item Ο συνολικός αριθμός εξόδων (\codeid{written})
+        ισούται με 6\,367 — κάθε εγγραφή του manifest
+        παράγει ακριβώς ένα \codeid{.wav} αρχείο
+        στον κατάλογο \codeid{data/audio\_wav\_codec\_matched/}.
+\end{itemize}
+
+Το round-trip είναι ένα \textbf{μοναδικό ντετερμινιστικό βήμα},
+όχι stochastic augmentation.
+Ο SHA-1 modulo cumulative distribution εξασφαλίζει
+ότι η ανάθεση codec spec σε κάθε \codeid{sample\_id}
+είναι ταυτόσημη σε κάθε εκτέλεση —
+ανεξάρτητα από τη σειρά εκτέλεσης των rows,
+την έκδοση του Python, ή άλλους περιβαλλοντικούς παράγοντες.
+Αυτό καθιστά το codec-match βήμα
+πλήρως αναπαραγώγιμο ως μέρος του frozen pipeline.

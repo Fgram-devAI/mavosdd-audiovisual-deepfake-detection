@@ -1,0 +1,442 @@
+\chapter{Τελική Παράδοση}
+\label{chap:teliki-paradosi}
+
+Το παρόν κεφάλαιο ολοκληρώνει την εργασία.
+Τεκμηριώνεται η \codeid{src/predict.py} ως παραδοτέο CLI
+για βαθμολόγηση μεμονωμένου βίντεο,
+η διαδικασία ελέγχου του test split ανά checkpoint,
+τα αποτελέσματα Phase~6+ (με \todoMetric{} ανά κελί όπου δεν έχει εκτελεστεί ακόμα ο test pass),
+τα ανοικτά ζητήματα γενίκευσης, και μια έντιμη σύνοψη.
+
+% ============================================================
+\section{Prediction CLI (\codeid{src/predict.py})}
+\label{sec:predict-cli}
+% ============================================================
+
+Το \codeid{src/predict.py} αποτελεί το τελικό demo interface του project.
+Δέχεται ένα μόνο αρχείο \codeid{.mp4} και ένα checkpoint από το \codeid{src/train.py}
+και εκπέμπει μία πιθανότητα bonafide/spoof.
+Εκτελεί ολόκληρο το feature extraction pipeline \emph{live}
+χρησιμοποιώντας ακριβώς τα ίδια code paths που χρησιμοποιεί το training,
+χωρίς να διαβάζει manifests, χωρίς να γράφει κάτω από τα \codeid{data/}, \codeid{models/}, ή \codeid{runs/}.
+
+Το CLI εστάλη και merged μέσω PR~\#16 (\codeid{feat/prediction-cli}).
+
+% ------------------------------------------------------------
+\subsection{Interface}
+\label{subsec:predict-interface}
+% ------------------------------------------------------------
+
+Τα υποχρεωτικά ορίσματα είναι \codeid{--video} και \codeid{--checkpoint}.
+Το \codeid{--device} ακολουθεί την ίδια λογική \codeid{auto → cuda > mps > cpu}
+με τον evaluator.
+
+\paragraph{Έξοδος human-readable.}
+\paragraph{Έξοδος JSON (\codeid{--json}).}
+Με τη σημαία \codeid{--json} εκπέμπεται ένα flat JSON dict
+με τα ίδια πεδία:
+\codeid{video}, \codeid{checkpoint}, \codeid{modality}, \codeid{backend},
+\codeid{audio\_window\_s}, \codeid{codec\_matched},
+\codeid{lip\_frames\_present}, \codeid{lip\_frames\_total}, \codeid{face\_detected},
+\codeid{p\_spoof}, \codeid{threshold}, \codeid{label}.
+
+% ------------------------------------------------------------
+\subsection{End-to-End Pipeline}
+\label{subsec:predict-pipeline}
+% ------------------------------------------------------------
+
+Η ακολουθία εκτέλεσης για \codeid{modality=fusion} είναι:
+
+\begin{enumerate}
+  \item \textbf{Φόρτωση checkpoint.}
+        Το \codeid{.pt} φορτώνεται με \codeid{torch.load(..., weights\_only=False)}.
+        Ελέγχεται η παρουσία των υποχρεωτικών πεδίων
+        \codeid{state\_dict}, \codeid{modality}, \codeid{backend},
+        \codeid{model\_hparams}, \codeid{norm\_stats}.
+        Εάν λείπει πεδίο ή το \codeid{modality} δεν είναι
+        \codeid{"audio"}, \codeid{"visual"}, ή \codeid{"fusion"},
+        εκτινάσσεται \codeid{ValueError} και επιστρέφεται exit code 1.
+
+  \item \textbf{Ανακατασκευή normalization stats.}
+        Τα \codeid{norm\_stats} του checkpoint
+        (serialized ως plain Python lists από το training)
+        ανακατασκευάζονται σε \codeid{numpy float32} arrays:
+        \codeid{audio\_mean}, \codeid{audio\_std},
+        \codeid{lips\_mean}, \codeid{lips\_std}, \codeid{eps}.
+
+  \item \textbf{Demux audio (αν \codeid{modality != "visual"}).}
+        Το \codeid{ffmpeg} χρησιμοποιείται για την εξαγωγή
+        16\,kHz mono WAV σε προσωρινό αρχείο.
+
+  \item \textbf{Codec round-trip (υπό συνθήκη).}
+        Εάν το checkpoint προέρχεται από codec-matched training
+        (το \codeid{audio\_dir} του checkpoint τελειώνει σε \codeid{\_codec}),
+        εκτελείται encode σε MP3 (44,1\,kHz / 128\,kbps)
+        και decode πίσω σε 16\,kHz WAV,
+        ακριβώς όπως στο pipeline εκπαίδευσης.
+        Το \codeid{--no-codec-match} το απενεργοποιεί ρητά.
+        Τα visual checkpoints παρακάμπτουν αυτό το βήμα εξ ορισμού.
+
+  \item \textbf{Audio window + frozen backend.}
+        Το \codeid{audio\_io.load\_audio\_window()} εξάγει
+        4,0 δευτερόλεπτα στα 16\,kHz με την ίδια ντετερμινιστική
+        λογική (\codeid{center} windowing) που χρησιμοποιεί το feature store.
+        Ο frozen backend
+        (\codeid{audio\_backends.load\_backend(backend\_name, device)})
+        παράγει embeddings $(T, 768)$.
+        Τα normalization stats εφαρμόζονται:
+        $\hat{x} = (x - \mu) / (\sigma + \varepsilon)$.
+
+  \item \textbf{MediaPipe lip landmarks (αν \codeid{modality != "audio"}).}
+        Ο \codeid{FaceMesh} (\codeid{static\_image\_mode=True},
+        \codeid{refine\_landmarks=True},
+        \codeid{min\_detection\_confidence=0.5})
+        εκτελεί \codeid{extract\_lips.extract\_one(video, mesh)}
+        για να παράγει \codeid{feats} σχήματος $(20, 84)$
+        και \codeid{mask} σχήματος $(20,)$.
+        Κλείνει πάντα (\codeid{mesh.close()}) σε \codeid{finally}.
+
+  \item \textbf{Forward pass.}
+        Η \codeid{LateFusionClassifier} κατασκευάζεται
+        με τα \codeid{model\_hparams} του checkpoint
+        και φορτώνεται το \codeid{state\_dict}.
+        Με \codeid{torch.no\_grad()}, ο classifier εκτελεί forward
+        ανάλογα με το \codeid{modality}:
+        \codeid{model(audio)} για audio,
+        \codeid{model(None, lips, mask)} για visual,
+        \codeid{model(audio, lips, mask)} για fusion.
+
+  \item \textbf{Βαθμολόγηση.}
+        \codeid{sigmoid(logit)} δίνει \codeid{p\_spoof}.
+        Εάν \codeid{p\_spoof >= threshold} (default 0.5),
+        η ετικέτα είναι \codeid{"spoof"}, αλλιώς \codeid{"bonafide"}.
+\end{enumerate}
+
+% ------------------------------------------------------------
+\subsection{Edge Cases}
+\label{subsec:predict-edge}
+% ------------------------------------------------------------
+
+Τέσσερις οριακές περιπτώσεις αντιμετωπίζονται ρητά.
+
+\paragraph{NO-FACE frames.}
+Όταν το MediaPipe δεν εντοπίζει πρόσωπο σε κάποια frames,
+τα αντίστοιχα frame features μηδενίζονται
+και το \codeid{mask[i] = 0.0}.
+Το mask-weighted pooling του \codeid{VisualHead} χρησιμοποιεί
+\codeid{clamp(min=1.0)} για να αποφύγει τη διαίρεση με μηδέν.
+Η έξοδος \codeid{lip\_frames\_present} αναφέρει πόσα frames εντοπίστηκαν
+(\codeid{int(mask.sum())}).
+Κανένα frame δεν αποσιωπάται: η μάσκα τα καταγράφει όλα.
+
+\paragraph{Βίντεο μικρότερο από 4 δευτερόλεπτα.}
+Το \codeid{audio\_io.load\_audio\_window()} εφαρμόζει zero-padding
+αν η διάρκεια του αρχείου είναι κάτω από τα απαιτούμενα 4,0\,s.
+Αυτό είναι συνεπές με τον τρόπο που αντιμετωπίζει τα σύντομα δείγματα
+το feature store κατά το training.
+
+\paragraph{Απουσία \codeid{ffmpeg} ή corrupt \codeid{.mp4}.}
+Εάν το \codeid{ffmpeg} δεν βρίσκεται στο PATH,
+εκτινάσσεται \codeid{FileNotFoundError} και μεταφράζεται σε
+\codeid{RuntimeError} με οδηγίες εγκατάστασης.
+Εάν το αρχείο βίντεο είναι κατεστραμμένο,
+τα σφάλματα FFmpeg αναδεικνύονται επίσης ως \codeid{RuntimeError}.
+
+\paragraph{Απουσία checkpoint ή κατεστραμμένο αρχείο.}
+Η συνάρτηση \codeid{main()} πιάνει
+\codeid{OSError} (αρχείο δεν βρέθηκε),
+\codeid{pickle.UnpicklingError} (κατεστραμμένο \codeid{.pt}),
+\codeid{ValueError} (checkpoint με ελλιπή πεδία), και
+\codeid{RuntimeError} (video/audio pipeline),
+εκτυπώνει μήνυμα στο \codeid{stderr}, και επιστρέφει exit code 1.
+Δεν εκπέμπεται ποτέ raw traceback στον χρήστη.
+
+% ============================================================
+\section{Test-Split Pass ανά Checkpoint}
+\label{sec:test-pass}
+% ============================================================
+
+Η αξιολόγηση του test split εκτελείται \textbf{ακριβώς μία φορά}
+ανά checkpoint, χρησιμοποιώντας το \codeid{src/evaluate.py}
+με τη σημαία \codeid{--allow-test}.
+
+Η σημαία \codeid{--allow-test} είναι δεσμευτική πύλη ασφαλείας,
+όχι απλή σύμβαση.
+και επιστρέφει exit code 2.
+Η επιλογή μοντέλου γίνεται αποκλειστικά βάσει \codeid{--split val}·
+το test split ξεκλειδώνεται μόνο για τον τελικό consolidated pass
+μετά την επιλογή του checkpoint.
+
+\paragraph{Αποτελέσματα που παράγει.}
+Ο evaluator εκτυπώνει:
+
+\begin{itemize}
+  \item \codeid{roc\_auc}: \AUC{} πάνω στο πλήρες test split.
+  \item \codeid{eer}: Equal Error Rate, δηλαδή το συμμετρικό operating point
+        όπου FPR = FNR.
+  \item \codeid{eer\_threshold}: το κατώφλι πιθανότητας στο οποίο FPR = FNR.
+  \item \codeid{f1}, \codeid{precision}, \codeid{recall}: στο threshold 0.5.
+  \item \codeid{confusion}: \codeid{tn / fp / fn / tp} στο threshold 0.5.
+  \item \codeid{per\_provider\_recall}: ανάκληση ανά TTS provider
+        (\engineName{elevenlabs}, \engineName{google\_tts}, \engineName{openai\_tts}).
+\end{itemize}
+
+Η \codeid{per\_provider\_recall} είναι διαγνωστικά κρίσιμη:
+εάν η ανάκληση είναι χαμηλή για έναν provider και υψηλή για τους άλλους,
+το μοντέλο έχει εκμάθει engine-specific fingerprints αντί για γενικευμένο detectors.
+
+% ============================================================
+\section{Phase 6+ Test Results}
+\label{sec:phase6-test-results}
+% ============================================================
+
+Τα παρακάτω αποτελέσματα θα συμπληρωθούν μετά την εκτέλεση
+του consolidated test-split pass ανά checkpoint.
+Κάθε κελί φέρει \todoMetric{} μέχρι τότε.
+
+\subsection{Test \AUC{} ανά Modality και Backend}
+\label{subsec:test-auc-table}
+
+\begin{table}[ht]
+  \centering
+  \begin{tabular}{lccc}
+    \toprule
+    Modality & \codeid{wav2vec2} & \codeid{wavlm} & \codeid{hubert} \\
+    \midrule
+    audio   & \todoMetric{audio\_wav2vec2 test AUC}
+            & \todoMetric{audio\_wavlm test AUC}
+            & \todoMetric{audio\_hubert test AUC} \\
+    visual  & \todoMetric{visual test AUC}
+            & —
+            & — \\
+    fusion  & \todoMetric{fusion\_wav2vec2 test AUC}
+            & \todoMetric{fusion\_wavlm test AUC}
+            & \todoMetric{fusion\_hubert test AUC} \\
+    \bottomrule
+  \end{tabular}
+  \caption{Test \AUC{} (Phase~6+, 4,149 βίντεο) — single-shot per checkpoint,
+    gated by \codeid{--allow-test}.}
+  \label{tab:test-auc-phase6}
+\end{table}
+
+\subsection{Per-Provider Test Recall}
+\label{subsec:per-provider-recall}
+
+\begin{table}[ht]
+  \centering
+  \begin{tabular}{lccccc}
+    \toprule
+    Provider
+      & \codeid{audio\_wav2vec2}
+      & \codeid{audio\_wavlm}
+      & \codeid{audio\_hubert}
+      & \codeid{fusion\_wav2vec2}
+      & \codeid{fusion\_wavlm} \\
+    \midrule
+    \engineName{elevenlabs}
+      & \todoMetric{EL recall wav2vec2}
+      & \todoMetric{EL recall wavlm}
+      & \todoMetric{EL recall hubert}
+      & \todoMetric{EL recall fusion\_wav2vec2}
+      & \todoMetric{EL recall fusion\_wavlm} \\
+    \engineName{google\_tts}
+      & \todoMetric{G recall wav2vec2}
+      & \todoMetric{G recall wavlm}
+      & \todoMetric{G recall hubert}
+      & \todoMetric{G recall fusion\_wav2vec2}
+      & \todoMetric{G recall fusion\_wavlm} \\
+    \engineName{openai\_tts}
+      & \todoMetric{OAI recall wav2vec2}
+      & \todoMetric{OAI recall wavlm}
+      & \todoMetric{OAI recall hubert}
+      & \todoMetric{OAI recall fusion\_wav2vec2}
+      & \todoMetric{OAI recall fusion\_wavlm} \\
+    \bottomrule
+  \end{tabular}
+  \caption{Per-provider test recall ανά audio/fusion checkpoint
+    (Phase~6+, single-shot).
+    Ασυμμετρία μεταξύ providers υποδηλώνει engine fingerprinting.}
+  \label{tab:per-provider-recall}
+\end{table}
+
+\subsection{Visual Confusion Matrix (Phase 6+)}
+\label{subsec:visual-confusion}
+
+\begin{table}[ht]
+  \centering
+  \begin{tabular}{lr}
+    \toprule
+    Μέτρηση & Τιμή \\
+    \midrule
+    TN (bonafide → bonafide) & \todoMetric{visual test TN} \\
+    FP (bonafide → spoof)    & \todoMetric{visual test FP} \\
+    FN (spoof → bonafide)    & \todoMetric{visual test FN} \\
+    TP (spoof → spoof)       & \todoMetric{visual test TP} \\
+    \AUC{}                   & \todoMetric{visual test AUC} \\
+    \EER{}                   & \todoMetric{visual test EER} \\
+    \bottomrule
+  \end{tabular}
+  \caption{Confusion matrix για το visual-only checkpoint (Phase~6+, test split).
+    Σε Phase~5 ήταν \codeid{tn=0/fp=150/fn=0/tp=217} (constant predictor).
+    Σε Phase~6+ αναμένεται βελτίωση λόγω LivePortrait + Sonic.}
+  \label{tab:visual-confusion-phase6}
+\end{table}
+
+% ============================================================
+\section{Open Limitations και Επόμενες Φάσεις}
+\label{sec:open-limitations}
+% ============================================================
+
+Τρία ανοικτά ζητήματα παραμένουν εκτός του scope της παρούσας εργασίας.
+Παρουσιάζονται εδώ ειλικρινά,
+μαζί με τους λόγους αποκλεισμού και τους προτεινόμενους κλάδους επέκτασης.
+
+% ------------------------------------------------------------
+\subsection{Engine-Fingerprint Generalization}
+\label{subsec:engine-fingerprint-generalization}
+% ------------------------------------------------------------
+
+Η Phase~5 αποκάλυψε ότι τα WavLM και HuBERT επιτυγχάνουν
+val \AUC{} = 1.0 με δύο TTS engines (ElevenLabs + Google Neural2).
+Αυτό δεν αποδεικνύει γενίκευση· αντίθετα,
+υποδηλώνει ότι τα μοντέλα εκμάθαν
+\textbf{per-engine spectral fingerprints}:
+vocoder residuals, bandwidth ceilings, silence padding patterns
+που είναι χαρακτηριστικά κάθε generator
+και αναλλοίωτα ως προς φωνή, codec και κείμενο.
+
+Η Phase~6+ προσθέτει \engineName{OpenAI TTS} ως τρίτο engine
+για μια πρώτη ένδειξη: εάν το \AUC{} παραμείνει κοντά στο 1.0,
+τα fingerprints γενικεύονται τουλάχιστον σε τρεις commercial APIs.
+Εάν πέσει, η μέθοδος αποτελεί στην ουσία engine-specific detector.
+
+Η αυστηρή απάντηση απαιτεί \textbf{Leave-One-Engine-Out (LOEO)} αξιολόγηση:
+εκπαίδευση στα engines $\{A, B\}$ και αξιολόγηση μόνο στο engine $\{C\}$,
+σε τρεις folds.
+Αυτό αντιστοιχεί στον κλάδο \codeid{feat/multi-engine-spoof}
+που απαιτεί δικό του roadmap revision
+(περισσότερα TTS engines, LOEO split logic,
+per-fold test evaluation).
+Βρίσκεται ρητά εκτός του τρέχοντος scope.
+
+% ------------------------------------------------------------
+\subsection{Audio-Visual Consistency Head}
+\label{subsec:av-consistency}
+% ------------------------------------------------------------
+
+Η concat late fusion που εφαρμόζεται στο παρόν project
+αποτελεί \textbf{robustness ensemble}:
+συνδυάζει δύο ανεξάρτητα classifier scores
+αλλά δεν μπορεί να ανιχνεύσει
+\emph{ασυμφωνία} μεταξύ ήχου και εικόνας.
+
+Η ανίχνευση lip-sync consistency
+(π.χ. "αυτό που λέει η φωνή αντιστοιχεί στις κινήσεις του στόματος;")
+απαιτεί αρχιτεκτονική τύπου SyncNet:
+ένα contrastive head που εκπαιδεύεται ρητά
+για audio-visual temporal alignment.
+Τρεις πιθανοί βαθμοί υλοποίησης περιγράφονται στο roadmap:
+
+\begin{enumerate}
+  \item Ελαφρύ in-domain contrastive head (χαμηλό κόστος).
+  \item Frozen pretrained SyncNet (υψηλότερη ποιότητα).
+  \item Full SyncNet-style training (απαιτεί ξεχωριστό dataset προεκπαίδευσης).
+\end{enumerate}
+
+Κάθε επίπεδο απαιτεί δικό του roadmap revision
+(\codeid{feat/av-consistency-head}).
+Η υλοποίηση είναι εκτός scope της παρούσας εργασίας.
+
+% ------------------------------------------------------------
+\subsection{Speaker και Language Diversity}
+\label{subsec:speaker-diversity}
+% ------------------------------------------------------------
+
+Το MAVOS-DD subset που χρησιμοποιείται
+περιορίζεται σε \textbf{αγγλόφωνο} περιεχόμενο.
+Αυτό αποτελεί δεσμευτικό hard constraint του project:
+\codeid{language=english} στο \codeid{config/default.yaml}.
+
+Οι TTS engines που αξιολογούνται
+(ElevenLabs, Google Neural2, OpenAI TTS)
+είναι όλοι commercial English APIs.
+Οι fingerprints που εκμαθαίνει το audio head
+ενδέχεται να μην γενικεύονται σε:
+\begin{itemize}
+  \item Άλλες γλώσσες (διαφορετική φωνολογία, διαφορετικοί vocoders).
+  \item Open-source TTS engines (Coqui, Piper, Mozilla TTS).
+  \item Acoustic conditions εκτός YouTube (τηλεφωνική ποιότητα, room acoustics).
+\end{itemize}
+
+Διεύρυνση πέρα από τον English-only MAVOS-DD subset
+αντιστοιχεί στον κλάδο \codeid{feat/dataset-expansion-v2},
+ο οποίος επίσης βρίσκεται εκτός τρέχοντος scope.
+
+% ============================================================
+\section{Έντιμη Σύνοψη}
+\label{sec:honest-summary}
+% ============================================================
+
+Το παρόν project επιτεύχθηκε σύμφωνα με τις φάσεις που ορίστηκαν.
+Παραθέτουμε ειλικρινά τι μάθαμε, τι ΔΕΝ μάθαμε,
+και ποιο θα ήταν το επόμενο honest βήμα.
+
+\paragraph{Τι μάθαμε.}
+
+\begin{itemize}
+  \item \textbf{Feature-first late fusion λειτουργεί στην πράξη.}
+        Ο διαχωρισμός extraction (μία φορά) και training (γρήγορο)
+        μέσω serialized \codeid{.npy}/\codeid{.npz} stores
+        επιτρέπει επαναλαμβανόμενα πειράματα
+        χωρίς κόστος re-extraction.
+
+  \item \textbf{Codec matching και voice-disjoint splits είναι απαραίτητα.}
+        Χωρίς αυτά, τα μοντέλα εκμαθαίνουν shortcut σήματα
+        (WAV vs MP3 ή "αυτή η φωνή είναι στο training set")
+        που δεν έχουν καμία σχέση με την ανίχνευση deepfake.
+
+  \item \textbf{Τα WavLM/HuBERT επιτυγχάνουν \AUC{} = 1.0 μετά τις δύο διορθώσεις.}
+        Ο λόγος δεν είναι ότι τα μοντέλα κατανοούν βαθιά
+        την αυθεντικότητα του λόγου,
+        αλλά ότι ανιχνεύουν per-engine spectral fingerprints.
+        Αυτό είναι ειλικρινές εύρημα, όχι ανακάλυψη αξιόπιστου detector.
+
+  \item \textbf{Visual-only καταρρέει δομικά στην Phase~1–5.}
+        Τα bonafide και TTS-spoof rows μοιράζονται byte-identical lip features.
+        Η Phase~6+ με LivePortrait + Sonic σπάει αυτή τη δομική ταυτοτησία.
+
+  \item \textbf{Fusion = audio-only όταν ο visual branch είναι στο επίπεδο τύχης.}
+        Αυτό είναι αναμενόμενο θεωρητικά και επιβεβαιώθηκε εμπειρικά.
+\end{itemize}
+
+\paragraph{Τι ΔΕΝ μάθαμε.}
+
+\begin{itemize}
+  \item \textbf{Δεν μετρήσαμε γενίκευση σε unseen TTS engines.}
+        LOEO δεν εκτελέστηκε (\codeid{feat/multi-engine-spoof}).
+
+  \item \textbf{Δεν μετρήσαμε audio-visual consistency.}
+        Το concat fusion δεν μπορεί να ανιχνεύσει lip-sync ασυμφωνία.
+        Αυτό απαιτεί SyncNet-style head (\codeid{feat/av-consistency-head}).
+
+  \item \textbf{Δεν ξέρουμε τι θα μάθει ο visual branch στο Phase~6+.}
+        Εάν θα μάθει πραγματικά lip shape/motion priors
+        ή φθηνότερα rendering artifacts είναι ανοικτό ερώτημα·
+        δεν κάνουμε claim εδώ.
+
+  \item \textbf{Δεν αξιολογήσαμε διαγλωσσικά ή σε open-source TTS engines.}
+        Το project περιορίζεται στον English MAVOS-DD subset
+        και σε τρεις commercial APIs.
+\end{itemize}
+
+\paragraph{Ποιο θα ήταν το επόμενο honest βήμα.}
+
+Εάν αυτό το project έπρεπε να μετατραπεί σε αξιόπιστο deepfake detector
+και όχι σε research prototype,
+το πρώτο βήμα θα ήταν η LOEO αξιολόγηση:
+εκπαίδευση σε δύο engines, αξιολόγηση στον τρίτο.
+Εάν το \AUC{} πέσει σημαντικά σε αυτή τη ρύθμιση,
+αυτό σημαίνει ότι ό,τι έχει εκπαιδευτεί μέχρι τώρα
+δεν ανιχνεύει deepfake· ανιχνεύει TTS engine.
+Αυτό είναι χρήσιμο γνώση — και το honest πρόβλημα
+που πρέπει να λυθεί πριν από οποιαδήποτε πρακτική εφαρμογή.
