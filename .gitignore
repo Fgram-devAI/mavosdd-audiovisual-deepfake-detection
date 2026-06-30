@@ -53,6 +53,7 @@ data/derived.phase1_5_backup/
 
 # Retired LaTeX workspace; keep the report deliverable under report/.
 latex/
+report/acoustic_probe/
 
 # LaTeX build artifacts
 latex/**/*.aux
