@@ -227,3 +227,22 @@ def test_cli_writes_summary_tables_and_default_probes(tmp_path, mini_manifest):
     assert isinstance(dp["per_feature_lr"], list)
     assert len(dp["per_feature_lr"]) > 5  # at least the core features
     assert "feature_importances" in dp["rf"]
+
+
+def test_cli_loeo_flag_runs_per_engine_probe(tmp_path, mini_manifest):
+    from src.analysis.acoustic_probe import main
+
+    out_dir = tmp_path / "out"
+    rc = main([
+        "--manifest", str(mini_manifest),
+        "--out-dir", str(out_dir),
+        "--no-plots",
+        "--loeo",
+    ])
+    assert rc == 0
+    meta = json.loads((out_dir / "probe_metrics.json").read_text())
+    engines = {row["engine"] for row in meta["loeo"]}
+    assert engines == {"elevenlabs", "google_tts", "openai_tts"}
+    for row in meta["loeo"]:
+        # Either a real metric row or a documented skip reason.
+        assert ("val_roc_auc" in row) or (row.get("skipped") in {"empty_val", "degenerate_one_engine"})

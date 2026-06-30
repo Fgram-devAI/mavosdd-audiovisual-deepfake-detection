@@ -289,8 +289,12 @@ def _run_default_probes(
 def _run_loeo(
     features: pd.DataFrame, feature_cols: list[str], *, seed: int,
 ) -> list[dict]:
-    """Filled in by Task 7."""
-    return []
+    """Run leave-one-engine-out (LOEO) evaluation."""
+    from src.analysis.acoustic_probe_models import loeo_matrix
+
+    if len(features) == 0:
+        return []
+    return loeo_matrix(features, feature_cols, seed=seed)
 
 
 def _make_plots(
