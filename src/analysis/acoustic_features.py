@@ -218,5 +218,38 @@ def compute_features(
 
 
 def _compute_f0_features(wave: np.ndarray, sr: int) -> dict[str, float]:
-    """Placeholder filled in by Task 3."""
-    raise NotImplementedError("F0 features are added in Task 3")
+    import librosa
+
+    f0, voiced_flag, _ = librosa.pyin(
+        wave,
+        sr=sr,
+        fmin=float(librosa.note_to_hz("C2")),   # ~65 Hz
+        fmax=float(librosa.note_to_hz("C7")),   # ~2093 Hz
+        frame_length=_N_FFT * 4,                 # pyin wants a longer frame
+        hop_length=_HOP,
+    )
+
+    voiced = np.asarray(voiced_flag, dtype=bool)
+    voiced_ratio = float(voiced.mean()) if voiced.size else 0.0
+
+    if voiced.any():
+        voiced_f0 = f0[voiced]
+        voiced_f0 = voiced_f0[np.isfinite(voiced_f0)]
+    else:
+        voiced_f0 = np.array([], dtype=np.float32)
+
+    if voiced_f0.size:
+        f0_mean = float(voiced_f0.mean())
+        f0_std = float(voiced_f0.std())
+        f0_range = float(voiced_f0.max() - voiced_f0.min())
+    else:
+        f0_mean = 0.0
+        f0_std = 0.0
+        f0_range = 0.0
+
+    return {
+        "f0_mean": f0_mean,
+        "f0_std": f0_std,
+        "f0_range": f0_range,
+        "voiced_frame_ratio": voiced_ratio,
+    }

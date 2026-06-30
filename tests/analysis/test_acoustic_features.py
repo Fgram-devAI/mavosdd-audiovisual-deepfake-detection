@@ -73,3 +73,47 @@ def test_feature_columns_helper_matches_core():
     from src.analysis.acoustic_features import CORE_FEATURE_COLUMNS, feature_columns
 
     assert feature_columns(with_f0=False) == CORE_FEATURE_COLUMNS
+
+
+def test_with_f0_returns_extended_schema(make_tone_wav):
+    from src.analysis.acoustic_features import (
+        CORE_FEATURE_COLUMNS,
+        F0_FEATURE_COLUMNS,
+        compute_features,
+    )
+
+    feats = compute_features(make_tone_wav(freq_hz=220.0, duration_s=1.0), with_f0=True)
+    assert set(feats.keys()) == set(CORE_FEATURE_COLUMNS) | set(F0_FEATURE_COLUMNS)
+    for value in feats.values():
+        assert isinstance(value, float)
+
+
+def test_f0_locates_pitch_of_tone(make_tone_wav):
+    from src.analysis.acoustic_features import compute_features
+
+    feats = compute_features(make_tone_wav(freq_hz=220.0, duration_s=1.0), with_f0=True)
+    # pyin should land somewhere in the same octave; a tone at 220 Hz should
+    # produce a confidently-voiced result, not silence.
+    assert feats["voiced_frame_ratio"] > 0.5
+    assert 150.0 < feats["f0_mean"] < 350.0
+
+
+def test_f0_on_silence_yields_unvoiced(make_silent_wav):
+    from src.analysis.acoustic_features import compute_features
+
+    feats = compute_features(make_silent_wav(duration_s=1.0), with_f0=True)
+    assert feats["voiced_frame_ratio"] == pytest.approx(0.0, abs=1e-3)
+    # f0_mean/std/range may be 0.0 by convention when unvoiced
+    assert feats["f0_mean"] == pytest.approx(0.0, abs=1e-6)
+    assert feats["f0_std"] == pytest.approx(0.0, abs=1e-6)
+    assert feats["f0_range"] == pytest.approx(0.0, abs=1e-6)
+
+
+def test_feature_columns_helper_matches_with_f0():
+    from src.analysis.acoustic_features import (
+        CORE_FEATURE_COLUMNS,
+        F0_FEATURE_COLUMNS,
+        feature_columns,
+    )
+
+    assert feature_columns(with_f0=True) == CORE_FEATURE_COLUMNS + F0_FEATURE_COLUMNS
