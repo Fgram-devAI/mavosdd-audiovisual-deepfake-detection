@@ -238,7 +238,7 @@ def _run_summaries(features: pd.DataFrame, out_dir: Path) -> None:
 
 def _split_arrays(
     features: pd.DataFrame, feature_cols: list[str], split: str,
-) -> tuple:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Extract X, y, providers for a given split."""
     import numpy as np
     sub = features[features["split"] == split]
