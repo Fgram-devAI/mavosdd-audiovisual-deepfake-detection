@@ -46,9 +46,13 @@ prompts/
 superpowers/
 docs/prompts/
 docs/superpowers/
+docs/presentation-guide.md
 data/splits.phase1_5_backup/
 data/manifest.phase1_5_backup.csv
 data/derived.phase1_5_backup/
+
+# Retired LaTeX workspace; keep the report deliverable under report/.
+latex/
 
 # LaTeX build artifacts
 latex/**/*.aux
