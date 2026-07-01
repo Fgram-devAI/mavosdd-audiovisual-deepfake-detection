@@ -68,3 +68,36 @@ def resample_mono_16k(
     except Exception as exc:  # noqa: BLE001 — narrow to typed error at boundary
         raise ResampleError(f"resample_failed: {exc}") from exc
     return out.astype(np.float32, copy=False)
+
+
+def trim_silence(
+    wave: np.ndarray,
+    *,
+    sr: int = 16000,
+    top_db: float = 30.0,
+    min_trimmed_s: float = 0.5,
+) -> tuple[np.ndarray, bool]:
+    """Symmetric leading + trailing silence trim via ``librosa.effects.trim``.
+
+    Deterministic. If the trimmed length would fall below ``min_trimmed_s``,
+    return the un-trimmed input and ``fallback_used=True`` so the CLI can
+    audit-log the fallback without failing the row.
+    """
+    import librosa
+
+    arr = np.asarray(wave, dtype=np.float32)
+    if arr.size == 0:
+        raise TrimError("empty_waveform")
+    try:
+        trimmed, _ = librosa.effects.trim(
+            arr,
+            top_db=top_db,
+            frame_length=400,
+            hop_length=160,
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise TrimError(f"trim_failed: {exc}") from exc
+
+    if trimmed.shape[0] < int(min_trimmed_s * sr):
+        return arr, True
+    return trimmed.astype(np.float32, copy=False), False
