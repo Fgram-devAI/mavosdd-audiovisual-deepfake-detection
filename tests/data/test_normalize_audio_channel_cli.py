@@ -130,6 +130,9 @@ def test_cli_end_to_end_happy_path(
         "--out-manifest", str(out_manifest),
         "--out-dir", str(out_dir),
         "--failures-csv", str(fail_csv),
+        # Loosen thresholds: this test has 1 failure out of 5 rows (rate=0.2).
+        "--max-failure-rate", "1.0",
+        "--max-group-failure-rate", "1.0",
     ])
     assert rc == 0
 
@@ -269,9 +272,119 @@ def test_cli_unsafe_provider_token_logged_as_path_failure(tmp_path, make_tone_wa
         "--out-manifest", str(tmp_path / "out.csv"),
         "--out-dir", str(tmp_path / "out_dir"),
         "--failures-csv", str(fail_csv),
+        # Loosen thresholds: 1/1 failure rate would otherwise trip exit 2.
+        "--max-failure-rate", "1.0",
+        "--max-group-failure-rate", "1.0",
     ]
     assert cli.main(args) == 0
     with fail_csv.open() as f:
         rows = list(csv.DictReader(f))
     assert len(rows) == 1
     assert rows[0]["stage"] == "path"
+
+
+# ── Task 10: _run.json provenance + threshold guards ────────────────────────
+
+
+def test_cli_run_json_records_counts_and_grouped_summaries(
+    tmp_path, make_tone_wav_norm, make_broken_wav
+):
+    p_ok = make_tone_wav_norm(name="ok.wav")
+    p_broken = make_broken_wav(name="broken.wav")
+    manifest = tmp_path / "m.csv"
+    _write_manifest(manifest, [
+        _row("s1", "original", p_ok, "train", "real", "0"),
+        _row("s2", "elevenlabs", p_broken, "val", "real", "1"),
+    ])
+    out_dir = tmp_path / "out_dir"
+    args = [
+        "--manifest", str(manifest),
+        "--out-manifest", str(tmp_path / "out.csv"),
+        "--out-dir", str(out_dir),
+        "--failures-csv", str(tmp_path / "fail.csv"),
+        # Loosen thresholds so this single failure doesn't trip exit 2.
+        "--max-failure-rate", "1.0",
+        "--max-group-failure-rate", "1.0",
+    ]
+    assert cli.main(args) == 0
+    run_json = json.loads((out_dir / "_run.json").read_text())
+    assert run_json["n_rows_in"] == 2
+    assert run_json["n_rows_valid"] == 1
+    assert run_json["n_rows_written"] == 1  # not a dry-run
+    assert run_json["n_rows_failed"] == 1
+    assert "params" in run_json and run_json["params"]["target_sr"] == 16000
+    grouped = run_json["failure_summary"]["by_split_label_provider"]
+    # One entry keyed by "val|1|elevenlabs" (or similar tuple form).
+    assert any("elevenlabs" in k for k in grouped)
+
+
+def test_cli_dry_run_reports_valid_but_written_zero(
+    tmp_path, make_tone_wav_norm
+):
+    p = make_tone_wav_norm(name="clean.wav")
+    manifest = tmp_path / "m.csv"
+    _write_manifest(manifest, [_row("s1", "original", p, "train", "real", "0")])
+    out_dir = tmp_path / "out_dir"
+    args = [
+        "--manifest", str(manifest),
+        "--out-manifest", str(tmp_path / "out.csv"),
+        "--out-dir", str(out_dir),
+        "--failures-csv", str(tmp_path / "fail.csv"),
+        "--dry-run",
+    ]
+    assert cli.main(args) == 0
+    run_json = json.loads((out_dir / "_run.json").read_text())
+    assert run_json["n_rows_valid"] == 1
+    assert run_json["n_rows_written"] == 0  # dry-run wrote nothing
+    assert run_json["params"]["dry_run"] is True
+
+
+def test_cli_global_failure_rate_exceeded_exits_2(
+    tmp_path, make_tone_wav_norm, make_broken_wav
+):
+    p_ok = make_tone_wav_norm(name="ok.wav")
+    p_broken_a = make_broken_wav(name="a.wav")
+    p_broken_b = make_broken_wav(name="b.wav")
+    manifest = tmp_path / "m.csv"
+    _write_manifest(manifest, [
+        _row("s1", "original", p_ok, "train", "real", "0"),
+        _row("s2", "elevenlabs", p_broken_a, "train", "real", "1"),
+        _row("s3", "elevenlabs", p_broken_b, "train", "real", "1"),
+    ])
+    args = [
+        "--manifest", str(manifest),
+        "--out-manifest", str(tmp_path / "out.csv"),
+        "--out-dir", str(tmp_path / "out_dir"),
+        "--failures-csv", str(tmp_path / "fail.csv"),
+        "--max-failure-rate", "0.1",   # 2/3 > 0.1 → exit 2
+        "--max-group-failure-rate", "1.0",
+    ]
+    assert cli.main(args) == 2
+    # Diagnostics still written.
+    assert (tmp_path / "out_dir" / "_run.json").exists()
+
+
+def test_cli_group_failure_rate_exceeded_exits_2(
+    tmp_path, make_tone_wav_norm, make_broken_wav
+):
+    # Global rate 0.25 (1/4), but one (train,1,elevenlabs) group is 1/1 = 1.0.
+    p_ok1 = make_tone_wav_norm(name="a.wav")
+    p_ok2 = make_tone_wav_norm(name="b.wav")
+    p_ok3 = make_tone_wav_norm(name="c.wav")
+    p_broken = make_broken_wav(name="d.wav")
+    manifest = tmp_path / "m.csv"
+    _write_manifest(manifest, [
+        _row("s1", "original", p_ok1, "train", "real", "0"),
+        _row("s2", "original", p_ok2, "val", "real", "0"),
+        _row("s3", "google_tts", p_ok3, "train", "real", "1"),
+        _row("s4", "elevenlabs", p_broken, "train", "real", "1"),
+    ])
+    args = [
+        "--manifest", str(manifest),
+        "--out-manifest", str(tmp_path / "out.csv"),
+        "--out-dir", str(tmp_path / "out_dir"),
+        "--failures-csv", str(tmp_path / "fail.csv"),
+        "--max-failure-rate", "1.0",
+        "--max-group-failure-rate", "0.5",   # elevenlabs/train/1 = 1.0 > 0.5
+    ]
+    assert cli.main(args) == 2

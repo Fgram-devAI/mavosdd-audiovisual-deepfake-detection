@@ -11,6 +11,7 @@ import csv
 import json
 import logging
 import os
+import subprocess
 import sys
 import tempfile
 from dataclasses import asdict, dataclass
@@ -259,6 +260,45 @@ def _stage_from_exc(exc: BaseException) -> str:
     return "unknown"
 
 
+def _git_commit_or_none() -> str | None:
+    try:
+        out = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], stderr=subprocess.DEVNULL, text=True,
+        )
+        return out.strip()
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _group_failure_rates(
+    written: list[dict], failed: list[dict],
+) -> dict[str, dict[str, float | int]]:
+    from collections import defaultdict
+    totals: dict[tuple[str, str, str], int] = defaultdict(int)
+    fails: dict[tuple[str, str, str], int] = defaultdict(int)
+    for r in written:
+        key = (r.get("split", ""), str(r.get("audio_label_binary", "")), r.get("provider", ""))
+        totals[key] += 1
+    for r in failed:
+        key = (r.get("split", ""), str(r.get("audio_label_binary", "")), r.get("provider", ""))
+        totals[key] += 1
+        fails[key] += 1
+    summary: dict[str, dict[str, float | int]] = {}
+    for key, total in totals.items():
+        n_fail = fails.get(key, 0)
+        rate = float(n_fail) / total if total else 0.0
+        summary["|".join(key)] = {"n_total": total, "n_failed": n_fail, "rate": rate}
+    return summary
+
+
+def _write_json_atomic(path: Path, obj: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix=path.name, dir=str(path.parent))
+    os.close(fd)
+    Path(tmp).write_text(json.dumps(obj, indent=2, sort_keys=True, allow_nan=False))
+    os.replace(tmp, path)
+
+
 def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     cfg = _parse_args(argv)
@@ -267,6 +307,8 @@ def main(argv: list[str] | None = None) -> int:
     if err is not None:
         print(err, file=sys.stderr)
         return 1
+
+    _started_at_iso = datetime.now(timezone.utc).isoformat()
 
     out_dir = Path(cfg.out_dir)
     out_manifest = Path(cfg.out_manifest)
@@ -333,13 +375,94 @@ def main(argv: list[str] | None = None) -> int:
             ["sample_id", "stage", "condition"],
         )
 
+    # Enrich failure summary with input-manifest metadata by re-joining on sample_id
+    # so groups reflect the original row's split/label/provider even when the row
+    # failed before it reached the output-manifest stage.
+    manifest_meta = {
+        row["sample_id"]: {
+            "split": row.get("split", ""),
+            "audio_label_binary": row.get("audio_label_binary", ""),
+            "provider": row.get("provider", ""),
+        }
+        for row in _iter_manifest(Path(cfg.manifest), cfg.limit)
+    }
+    failures_with_meta = []
+    for r in new_failures:
+        meta = manifest_meta.get(r["sample_id"], {})
+        failures_with_meta.append({**meta, **r})
+    written_for_grouping = [
+        {
+            "split": r.get("split", ""),
+            "audio_label_binary": r.get("audio_label_binary", ""),
+            "provider": r.get("provider", ""),
+        }
+        for r in written_rows
+    ]
+
+    grouped_summary = _group_failure_rates(written_for_grouping, failures_with_meta)
+
     n_valid = len(written_rows)
     n_written = 0 if cfg.dry_run else n_valid
     n_failed = len(new_failures)
+    n_total = n_valid + n_failed
+
+    run_json_obj = {
+        "manifest": cfg.manifest,
+        "n_rows_in": n_total,
+        "n_rows_valid": n_valid,
+        "n_rows_written": n_written,
+        "n_rows_failed": n_failed,
+        "n_rows_skipped_existing": n_skipped_existing,
+        "params": {
+            "target_sr": cfg.target_sr,
+            "lufs": cfg.lufs,
+            "lowpass_hz": cfg.lowpass_hz,
+            "trim_top_db": cfg.trim_top_db,
+            "max_failure_rate": cfg.max_failure_rate,
+            "max_group_failure_rate": cfg.max_group_failure_rate,
+            "no_trim": cfg.no_trim,
+            "no_loudness": cfg.no_loudness,
+            "no_lowpass": cfg.no_lowpass,
+            "overwrite": cfg.overwrite,
+            "limit": cfg.limit,
+            "dry_run": cfg.dry_run,
+            "seed": cfg.seed,
+        },
+        "failure_summary": {
+            "by_split_label_provider": grouped_summary,
+        },
+        "n_fallbacks": len(all_fallbacks),
+        "started_at_utc": _started_at_iso,
+        "finished_at_utc": datetime.now(timezone.utc).isoformat(),
+        "commit": _git_commit_or_none(),
+    }
+    _write_json_atomic(out_dir / "_run.json", run_json_obj)
+
     print(
         f"normalize_audio_channel: valid={n_valid} written={n_written} "
         f"skipped_existing={n_skipped_existing} failed={n_failed} dry_run={cfg.dry_run}"
     )
+
+    # Threshold guards. Only enforce when at least one row was seen.
+    if n_total == 0:
+        return 2
+    global_rate = n_failed / n_total
+    if global_rate > cfg.max_failure_rate:
+        print(
+            f"FAIL: global failure rate {global_rate:.3f} exceeds "
+            f"--max-failure-rate {cfg.max_failure_rate}",
+            file=sys.stderr,
+        )
+        return 2
+    for key, stats in grouped_summary.items():
+        if stats["rate"] > cfg.max_group_failure_rate:
+            print(
+                f"FAIL: group {key} failure rate {stats['rate']:.3f} exceeds "
+                f"--max-group-failure-rate {cfg.max_group_failure_rate}",
+                file=sys.stderr,
+            )
+            return 2
+
     return 0
 
 
