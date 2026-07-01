@@ -151,3 +151,40 @@ def lowpass(
     except Exception as exc:  # noqa: BLE001
         raise LowpassError(f"sosfiltfilt_failed: {exc}") from exc
     return out.astype(np.float32, copy=False), False
+
+
+def loudness_normalize(
+    wave: np.ndarray,
+    *,
+    sr: int = 16000,
+    target_lufs: float = -23.0,
+    silence_floor_lufs: float = -70.0,
+) -> tuple[np.ndarray, bool]:
+    """EBU R128 loudness normalize via ``pyloudnorm``.
+
+    Measures integrated LUFS with a 400 ms block; if the result is ``-inf``
+    or below ``silence_floor_lufs``, returns the input unchanged with
+    ``skipped_silence=True`` so the CLI can audit-log the silence skip
+    without failing the row.
+    """
+    import math
+
+    import pyloudnorm as pyln
+
+    arr = np.asarray(wave, dtype=np.float32)
+    if arr.size == 0:
+        raise LoudnessError("empty_waveform")
+
+    try:
+        meter = pyln.Meter(rate=sr, block_size=0.400)
+        measured = float(meter.integrated_loudness(arr.astype(np.float64)))
+    except Exception as exc:  # noqa: BLE001
+        raise LoudnessError(f"measure_failed: {exc}") from exc
+
+    if not math.isfinite(measured) or measured <= silence_floor_lufs:
+        return arr, True
+
+    gain_db = target_lufs - measured
+    gain = float(10.0 ** (gain_db / 20.0))
+    out = (arr * gain).astype(np.float32, copy=False)
+    return out, False

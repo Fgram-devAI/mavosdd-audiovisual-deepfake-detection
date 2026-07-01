@@ -122,3 +122,41 @@ def test_lowpass_deterministic(make_tone_wav_norm):
     a, _ = an.lowpass(wave, sr=sr)
     b, _ = an.lowpass(wave, sr=sr)
     np.testing.assert_array_equal(a, b)
+
+
+def test_loudness_normalize_scales_quiet_up():
+    sr = 16000
+    t = np.arange(sr * 2) / sr
+    quiet = (0.01 * np.sin(2 * np.pi * 1000.0 * t)).astype(np.float32)
+    out, skipped = an.loudness_normalize(quiet, sr=sr, target_lufs=-23.0)
+    assert skipped is False
+    quiet_peak = float(np.abs(quiet).max())
+    out_peak = float(np.abs(out).max())
+    assert out_peak > quiet_peak * 1.5
+
+
+def test_loudness_normalize_scales_hot_down():
+    sr = 16000
+    t = np.arange(sr * 2) / sr
+    hot = (0.95 * np.sin(2 * np.pi * 1000.0 * t)).astype(np.float32)
+    out, skipped = an.loudness_normalize(hot, sr=sr, target_lufs=-23.0)
+    assert skipped is False
+    hot_peak = float(np.abs(hot).max())
+    out_peak = float(np.abs(out).max())
+    assert out_peak < hot_peak
+
+
+def test_loudness_normalize_silence_skips():
+    silent = np.zeros(int(16000 * 2), dtype=np.float32)
+    out, skipped = an.loudness_normalize(silent, sr=16000)
+    assert skipped is True
+    np.testing.assert_array_equal(out, silent)
+
+
+def test_loudness_normalize_deterministic():
+    sr = 16000
+    t = np.arange(sr * 2) / sr
+    x = (0.1 * np.sin(2 * np.pi * 1000.0 * t)).astype(np.float32)
+    a, _ = an.loudness_normalize(x, sr=sr)
+    b, _ = an.loudness_normalize(x, sr=sr)
+    np.testing.assert_array_equal(a, b)
