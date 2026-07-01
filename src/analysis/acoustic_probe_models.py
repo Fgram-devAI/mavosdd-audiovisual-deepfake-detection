@@ -87,8 +87,8 @@ def evaluate(
             y_slice = y_val[mask]
             pred_slice = preds[mask]
             if y_slice.sum() == 0:
-                # No positives in this slice — recall undefined; record None.
-                per_provider[str(p)] = float("nan")
+                # No positives in this slice; positive-class recall is undefined.
+                per_provider[str(p)] = None
                 continue
             per_provider[str(p)] = float(
                 recall_score(y_slice, pred_slice, zero_division=0)

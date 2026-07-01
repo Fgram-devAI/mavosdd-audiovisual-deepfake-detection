@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import sys
 import tempfile
@@ -99,8 +100,25 @@ def _atomic_write_json(obj: Any, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(prefix=path.name, dir=str(path.parent))
     os.close(fd)
-    Path(tmp).write_text(json.dumps(obj, indent=2, sort_keys=True))
+    Path(tmp).write_text(json.dumps(_json_safe(obj), indent=2, sort_keys=True, allow_nan=False))
     os.replace(tmp, path)
+
+
+def _json_safe(obj: Any) -> Any:
+    """Convert numpy scalars and non-finite floats into strict JSON values."""
+    if isinstance(obj, dict):
+        return {str(k): _json_safe(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_json_safe(v) for v in obj]
+    if isinstance(obj, tuple):
+        return [_json_safe(v) for v in obj]
+    if isinstance(obj, np.integer):
+        return int(obj)
+    if isinstance(obj, np.floating):
+        obj = float(obj)
+    if isinstance(obj, float) and not math.isfinite(obj):
+        return None
+    return obj
 
 
 def _concat_nonempty(frames: list[pd.DataFrame], columns: list[str]) -> pd.DataFrame:
