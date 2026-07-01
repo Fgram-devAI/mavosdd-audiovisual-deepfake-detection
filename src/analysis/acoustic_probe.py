@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
+import numpy as np
 
 from src.analysis.acoustic_features import (
     AcousticFeatureError,
@@ -100,6 +101,17 @@ def _atomic_write_json(obj: Any, path: Path) -> None:
     os.close(fd)
     Path(tmp).write_text(json.dumps(obj, indent=2, sort_keys=True))
     os.replace(tmp, path)
+
+
+def _concat_nonempty(frames: list[pd.DataFrame], columns: list[str]) -> pd.DataFrame:
+    # Skip empty frames so pd.concat doesn't emit a FutureWarning about
+    # all-NA / empty column dtype inference.
+    parts = [df for df in frames if len(df) > 0]
+    if not parts:
+        return pd.DataFrame(columns=columns)
+    if len(parts) == 1:
+        return parts[0].reset_index(drop=True)
+    return pd.concat(parts, ignore_index=True)
 
 
 class CacheSchemaError(Exception):
@@ -189,10 +201,7 @@ def _extract_features_resumable(
         for col in feat_cols:
             if col in new_df.columns:
                 new_df[col] = pd.to_numeric(new_df[col], errors='coerce')
-        cache = pd.concat(
-            [cache, new_df],
-            ignore_index=True,
-        )
+        cache = _concat_nonempty([cache, new_df], expected_columns)
         # Ensure cache has correct dtypes before writing
         for col in feat_cols:
             if col in cache.columns:
@@ -222,10 +231,7 @@ def _flush_cache_and_failures(
     for col in feat_cols:
         if col in new_df.columns:
             new_df[col] = pd.to_numeric(new_df[col], errors='coerce')
-    snapshot = pd.concat(
-        [cache, new_df],
-        ignore_index=True,
-    )
+    snapshot = _concat_nonempty([cache, new_df], expected_columns)
     # Ensure snapshot has correct dtypes before writing
     for col in feat_cols:
         if col in snapshot.columns:
