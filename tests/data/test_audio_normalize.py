@@ -179,3 +179,21 @@ def test_peak_safety_leaves_quiet_untouched():
 def test_peak_safety_empty_raises():
     with pytest.raises(an.PeakSafetyError):
         an.peak_safety(np.zeros(0, dtype=np.float32))
+
+
+@pytest.mark.parametrize(
+    "bad",
+    ["", "  ", "/abs", "..", "..\\evil", "a/b", "a\\b", "with nul\x00here",
+     "C:evil", "drive:letter"],
+)
+def test_validate_path_token_rejects_unsafe(bad):
+    with pytest.raises(an.PathTokenError):
+        an.validate_path_token(bad, field="provider")
+
+
+@pytest.mark.parametrize(
+    "good",
+    ["elevenlabs", "google_tts", "openai_tts", "original", "sample_video_id__voice-abc"],
+)
+def test_validate_path_token_allows_safe(good):
+    assert an.validate_path_token(good, field="sample_id") == good

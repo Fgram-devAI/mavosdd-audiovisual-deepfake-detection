@@ -41,6 +41,10 @@ class WriteError(AudioNormalizeError):
     pass
 
 
+class PathTokenError(AudioNormalizeError):
+    """Raised when a provider / sample_id token is not path-safe."""
+
+
 def resample_mono_16k(
     wave: np.ndarray,
     sr: int,
@@ -204,3 +208,26 @@ def peak_safety(wave: np.ndarray, *, ceiling: float = 0.99) -> np.ndarray:
         return arr
     scale = float(ceiling) / peak
     return (arr * scale).astype(np.float32, copy=False)
+
+
+def validate_path_token(token: str, *, field: str) -> str:
+    """Return ``token`` unchanged if it is safe to use as a single path segment.
+
+    Rejects empty strings, tokens with any path separator, path traversal
+    (``..``), NUL, leading/trailing whitespace, or absolute paths. This is
+    called before building output paths from ``provider`` and ``sample_id``.
+    """
+    if not isinstance(token, str):
+        raise PathTokenError(f"invalid_{field}: not_a_string")
+    if token == "" or token.strip() != token or token.strip() == "":
+        raise PathTokenError(f"invalid_{field}: empty_or_whitespace")
+    if token == ".." or token == ".":
+        raise PathTokenError(f"invalid_{field}: dotdot")
+    if "\x00" in token:
+        raise PathTokenError(f"invalid_{field}: nul_byte")
+    if "/" in token or "\\" in token:
+        raise PathTokenError(f"invalid_{field}: path_separator")
+    if ":" in token:
+        # Windows-style drive prefixes (e.g. "C:foo") or NTFS alt-streams.
+        raise PathTokenError(f"invalid_{field}: colon")
+    return token
