@@ -160,3 +160,22 @@ def test_loudness_normalize_deterministic():
     a, _ = an.loudness_normalize(x, sr=sr)
     b, _ = an.loudness_normalize(x, sr=sr)
     np.testing.assert_array_equal(a, b)
+
+
+def test_peak_safety_scales_hot_down():
+    wave = np.array([0.0, 1.5, -1.2, 0.3], dtype=np.float32)
+    out = an.peak_safety(wave, ceiling=0.99)
+    assert float(np.abs(out).max()) <= 0.99 + 1e-6
+    # Relative ranks preserved.
+    assert np.argmax(np.abs(out)) == np.argmax(np.abs(wave))
+
+
+def test_peak_safety_leaves_quiet_untouched():
+    wave = np.array([0.0, 0.3, -0.2, 0.5], dtype=np.float32)
+    out = an.peak_safety(wave, ceiling=0.99)
+    np.testing.assert_array_equal(out, wave)
+
+
+def test_peak_safety_empty_raises():
+    with pytest.raises(an.PeakSafetyError):
+        an.peak_safety(np.zeros(0, dtype=np.float32))

@@ -188,3 +188,19 @@ def loudness_normalize(
     gain = float(10.0 ** (gain_db / 20.0))
     out = (arr * gain).astype(np.float32, copy=False)
     return out, False
+
+
+def peak_safety(wave: np.ndarray, *, ceiling: float = 0.99) -> np.ndarray:
+    """Scale the entire buffer so that ``max(|wave|) <= ceiling``.
+
+    Deterministic. Never soft-clips. If the peak is already within the
+    ceiling, returns the input unchanged.
+    """
+    arr = np.asarray(wave, dtype=np.float32)
+    if arr.size == 0:
+        raise PeakSafetyError("empty_waveform")
+    peak = float(np.abs(arr).max())
+    if peak <= ceiling or peak == 0.0:
+        return arr
+    scale = float(ceiling) / peak
+    return (arr * scale).astype(np.float32, copy=False)
