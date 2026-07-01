@@ -97,12 +97,14 @@ def test_lowpass_nyquist_raises():
         an.lowpass(wave, sr=16000, cutoff_hz=9000.0)  # above Nyquist
 
 
-def test_lowpass_short_clip_skips_gracefully(make_short_wav):
-    p = make_short_wav(duration_s=0.005)  # 80 samples at 16 kHz
-    wave, sr = sf.read(str(p))
-    out, skipped = an.lowpass(wave, sr=sr, cutoff_hz=7000.0, order=8)
+def test_lowpass_short_clip_skips_gracefully():
+    # A 20-sample buffer sits below sosfiltfilt's minimum padding
+    # requirement (27 for the 8th-order filter used here); the guard
+    # returns the input unchanged.
+    wave = (0.3 * np.sin(np.linspace(0, 3.14, 20))).astype(np.float32)
+    out, skipped = an.lowpass(wave, sr=16000, cutoff_hz=7000.0, order=8)
     assert skipped is True
-    np.testing.assert_array_equal(out, wave.astype(np.float32))
+    np.testing.assert_array_equal(out, wave)
 
 
 def test_lowpass_26_sample_clip_skips_not_raises():

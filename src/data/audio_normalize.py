@@ -135,12 +135,10 @@ def lowpass(
     # sosfiltfilt's internal padlen check (as of SciPy 1.15) requires
     # arr.shape[0] > 3 * (2 * n_sections + 1). For an 8th-order filter that
     # is 4 SOS sections → padlen = 27, so waveforms of length <= 27 must
-    # skip filtering entirely. We use a 10x safety margin for audio quality:
-    # short clips may not have enough samples for stable filtering. We ALSO
-    # catch ValueError from sosfiltfilt in case a future SciPy tightens the
-    # requirement further.
+    # skip filtering entirely. We ALSO catch ValueError from sosfiltfilt
+    # in case a future SciPy tightens the requirement further.
     n_sections = sos.shape[0]
-    padlen = 10 * (2 * n_sections + 1)
+    padlen = 3 * (2 * n_sections + 1)
     if arr.shape[0] <= padlen:
         return arr, True
 
