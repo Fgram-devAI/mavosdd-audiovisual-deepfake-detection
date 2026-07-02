@@ -4,7 +4,7 @@
 
 ## Project overview
 
-**Audiovisual (multimodal) deepfake detection** on a capped MAVOS-DD video subset. The approach is **feature-first late fusion**: two modalities are extracted once into serialized `.npy` feature files, then a lightweight classifier learns over them. The two modalities are (1) **frozen Wav2Vec2 audio embeddings** (`facebook/wav2vec2-base-960h`) and (2) **MediaPipe Face Mesh lip-landmark visual motion** features. A late-fusion neural net (audio MLP head + visual BiGRU head → concat → MLP logit) produces the real/fake logit. **Serialized `.npy` feature files are the only training input — raw video never enters the training loop.** This is not speech-only / audio-only detection.
+**Audiovisual (multimodal) deepfake detection** on a capped MAVOS-DD video subset. Keep three labels separate: (1) **audio anti-spoof** asks whether speech audio is TTS/generated, (2) **visual fake-video** asks whether the video source is generated (`echomimic`/`memo`/`liveportrait`/`sonic` vs `real`), and (3) **audio-visual sync** asks whether mouth motion matches the audio. The mature pipeline is feature-first: audio SSL embeddings, MediaPipe lip-landmark features, mel-spectrograms, and/or sampled frame features are extracted once, then lightweight heads learn over cached artifacts. **Raw video should only enter extraction/notebook baselines, not the core feature-store training loop.**
 
 ## Repo map
 
@@ -27,7 +27,7 @@ src/
   train.py
   evaluate.py
   predict.py
-reports/{data_audit.md, final_report.md}
+report/{audio_channel_normalization_audit.md, val_eval/, visual_frame_baseline/}
 data/                          # [gitignored] raw/, quarantine/, features/audio|lips/, manifest.csv, splits/
 models/checkpoints/            # [gitignored]
 runs/                          # [gitignored]
@@ -38,7 +38,7 @@ Source roles: `data/download_subset.py` (streaming MAVOS-DD filter + hard cap); 
 
 ## Docs & context model
 
-**Public, tracked (source of truth):** `README.md`, `docs/workflow.md`, `reports/`, `src/`, `config/default.yaml`, and this `CLAUDE.md`.
+**Public, tracked (source of truth):** `README.md`, `docs/workflow.md`, `report/`, `src/`, `config/default.yaml`, and this `CLAUDE.md`.
 
 **Local, git-ignored (private scratch/sidecar — never cite as public truth):** `.claude/`, `docs/prompts/` (older `claude.md` state tracker + `codex.md` playbook), and the entire `docs/superpowers/` folder — both the `CLAUDE.md` brainstorming sidecar and the implementation specs (`spec-*.md`, e.g. `spec-fetching-data.md`) are local working material, not public deliverables. `.gitignore` ignores `.claude/`, `docs/prompts/`, `docs/superpowers/`, and root-level lowercase `/claude.md`, `/codex.md`, `/workflow.md`; the root `CLAUDE.md` is explicitly re-included so this memory file stays tracked even on case-insensitive filesystems.
 
@@ -46,20 +46,20 @@ Source roles: `data/download_subset.py` (streaming MAVOS-DD filter + hard cap); 
 
 - **Dataset cap** (Phase 6+): ~4,149 videos — 2500 real / 600 EchoMimic / 400 MEMO / 314 LivePortrait / 335 Sonic. Phase 1–5 baselines stay tied to the original 1,000-video cap (500 real / 250 EchoMimic / 250 MEMO); see `docs/roadmap-audio-visual-speech-detection.md` Revision 1.
 - **English-only** subset.
-- **Raw video never enters the training loop** — `.npy` features only.
+- **Core feature-store training uses cached features only** — raw video may enter extraction/notebook baselines, but not `src/train.py` feature-store models.
 - **Wav2Vec2 frozen**: extracted once, never fine-tuned.
 - **Splits frozen once created**: 70/15/15 stratified on `source_folder`, seed 42.
 - **Test split evaluated exactly once**, after model selection.
 - **Normalization statistics computed on the train split only.**
 - **Under 2M trainable params** (Wav2Vec2 excluded).
 - **Seed 42 everywhere.**
-- **Binary label map**: real→0, echomimic→1, memo→1.
-- **Deep-learning-only classifier** — no classical hand-engineered final model.
+- **Binary video label map**: real→0, echomimic/memo/liveportrait/sonic→1.
+- **Deep-learning-only final classifier** — classical probes are diagnostics only.
 - **Log MediaPipe face-detection misses via masks; never silently drop.**
 
 ## Current status
 
-Phases 1–5 complete. MAVOS-DD subset ingested (1000 native videos at the original cap), splits frozen (seed 42, 70/15/15 stratified on `source_folder`), derived manifests built under `data/derived/`, Wav2Vec2/WavLM/HuBERT audio features extracted (2171 `.npy` per backend, codec-matched), MediaPipe lip features extracted (1000 `.npz`). Feature-store dataset loader (`src/data/feature_store.py`) green; reusable modality-aware training harness (`src/train.py`) + evaluator (`src/evaluate.py`) shipped; audio anti-spoof baselines (PR #8) and visual + fusion baselines on voice-disjoint splits (PR #9) trained. **Entering Phase 6** (consolidated test-split pass + final report) — and starting the roadmap-Revision-1 dataset expansion (~4,149 videos, +liveportrait/+sonic source folders) for Phase 6+ work.
+Phases 1–5 complete. MAVOS-DD subset ingested, splits frozen (seed 42, 70/15/15 stratified on `source_folder`), derived manifests built under `data/derived/`, Wav2Vec2/WavLM/HuBERT audio features extracted, MediaPipe lip features extracted, and feature-store dataset loader (`src/data/feature_store.py`) green. The project has moved beyond the original 1,000-video cap into the expanded five-source setup (~4,149 matched-bonafide videos across real/echomimic/memo/liveportrait/sonic), plus TTS/STS/generated-audio rows for the audio-spoof task.
 
 - **PHASE 5 VAL ROC-AUC (codec-matched + voice-disjoint, honest in-distribution):**
 
@@ -77,9 +77,13 @@ Phases 1–5 complete. MAVOS-DD subset ingested (1000 native videos at the origi
   - **WavLM/HuBERT saturate at val ROC-AUC = 1.0** for both audio-only and fusion. Wav2Vec2 stays at ~0.95 for both. The remaining shortcut is per-TTS-engine spectral fingerprinting (ElevenLabs vs Google TTS).
   - **Visual-only is structurally at chance** because the matched bonafide row and the matched spoof row(s) for any given video share the **same `source_video_id` and therefore the same `.npz` lip features**. A BiGRU asked to discriminate between two rows whose input is byte-identical cannot do better than class-frequency bias.
   - **Fusion = audio-only.** Concat fusion can't carry cross-modal interaction when one stream is at chance; fusion just inherits the audio component's score. The signal that would help is **audio-visual lip-sync** (deferred — would require a roadmap revision for the consistency-head architecture).
-  - Full per-checkpoint val metric battery (roc_auc, eer, eer_threshold, f1, precision, recall, confusion, per_provider_recall) is in `reports/val_eval/all_checkpoints_val_metrics.json`.
+  - Full per-checkpoint val metric battery (roc_auc, eer, eer_threshold, f1, precision, recall, confusion, per_provider_recall) is in `report/val_eval/all_checkpoints_val_metrics.json`.
 
-- **`feat/lip-sync-consistency` shipped** (2026-07-02): SyncNet-style consistency head (WavLM + BiGRU) trained on a deterministic pair manifest (train/val only; test locked out of the manifest itself in this branch). Val ROC-AUC **0.8409**, EER **0.2527**, F1 **0.826**, positive-sync accuracy **0.748**. Per-negative-type recall reveals the model is really an audio-spoof detector: `generated_same_transcript=1.00`, `mismatched_generated=1.00`, `mismatched_original=0.48`. Full metrics: `report/val_eval/lipsync_wavlm_val.txt`.
+- **Audio channel normalization shipped**: codec-matched audio was normalized with silence trim, 7 kHz lowpass, EBU R128 loudness normalization, and peak safety. It reduced but did not remove shortcuts: acoustic LR ROC-AUC **0.9914 → 0.9713**, RF ROC-AUC **0.9970 → 0.9889**, normalized mel-CNN ROC-AUC **0.99994**. Full report: `report/audio_channel_normalization_audit.md`.
+
+- **`feat/lip-sync-consistency` shipped** (2026-07-02): SyncNet-style consistency head (WavLM + BiGRU) trained on a deterministic pair manifest (train/val only; test locked out of the manifest itself in this branch). Val ROC-AUC **0.8409**, EER **0.2527**, F1 **0.826**, positive-sync accuracy **0.748**. Per-negative-type recall reveals the model is mostly an audio-spoof detector: `generated_same_transcript=1.00`, `mismatched_generated=1.00`, `mismatched_original=0.48`. Full metrics: `report/val_eval/lipsync_wavlm_val.txt`.
+
+- **Visual frame baseline notebook landed**: EfficientNetB0 over sampled video frames for real vs generated-video (`real=0`, `echomimic/memo/liveportrait/sonic=1`) reaches val ROC-AUC **0.9853**, EER **0.0671**, F1 **0.9167**. Per-source: real specificity **0.9307**, echomimic/memo/sonic recall **1.0**, liveportrait recall **0.6596**. Treat as channel-confounded because sampled source folders have disjoint resolution/FPS/codec signatures. Summary: `report/visual_frame_baseline/visual_frame_baseline_efficientnet_b0_val.json`.
 
 ## Workflow (phase-based — see `docs/workflow.md`)
 
@@ -109,18 +113,12 @@ Dataset `unibuc-cs/MAVOS-DD`, split `train`, language english; caps real:500 / e
 
 ## TODO / next actions
 
-**Phase 6 — close out the Phase-1–5 milestone first (small):**
-1. Single consolidated test-split pass per checkpoint: `python -m src.evaluate --checkpoint <ckpt> --split test --allow-test` for mel-CNN (PR #7), audio × 3 (PR #8), visual + fusion × {1 or 3} (PR #9).
-2. Assemble the test-split table (per-modality + per-provider recall + confusion).
-3. Write `reports/final_report.md` documenting honest reads: WavLM/HuBERT engine fingerprinting, visual-only structural collapse, fusion = audio.
-
-**Then (optional, after Phase 6):**
-- `feat/dataset-expansion` — re-ingest at the Revision-1 cap (~4,149 videos), re-freeze splits, re-extract features/embeddings. Phase 1–5 baselines remain valid for the old cap.
-- `feat/multi-engine-spoof` — wire up `scripts/synthesize_coqui_xtts_from_transcripts.py` and `scripts/synthesize_openai_tts_from_transcripts.py`; run leave-one-engine-out (LOEO) evaluation across ≥ 3 TTS engines for the engine-fingerprint generalization story.
-- ~~`feat/av-consistency-head`~~ — superseded by `feat/lip-sync-consistency` (shipped 2026-07-02). The remaining audio-visual work is `feat/generated-video-batch-eval` — evaluate full generated videos with explicit labels for audio fake / visual fake / audio-visual consistency / source-provider family. Uses the `models/checkpoints/best_lipsync_wavlm.pt` checkpoint from this branch as one input. Regenerate the pair manifest with `--splits train val test` and add an `--allow-test` gate before touching the test split.
+**Final-stage branches:**
+1. `feat/pretrained-syncnet` — add a stronger/pretrained SyncNet-style mouth-audio consistency path. The lightweight WavLM+BiGRU head is useful but fails mismatched-original audio, so do not oversell it as true sync.
+2. `feat/generated-video-batch-fusion` — ingest the user's new fully AI-generated videos and score them with explicit heads: `audio_fake_score`, `visual_fake_score`, and `av_inconsistent_score`. The final label should be composed from those signals, not by pretending audio fake and visual fake are the same phenomenon.
 
 ## Handoff notes
 
 - **Done:** ingestion, frozen splits, derived manifests, three codec-matched audio embedding stores, MediaPipe lip features, feature-store dataset loader + validate CLI (PR #6); mel-CNN baseline (PR #7); audio anti-spoof baselines wav2vec2/wavlm/hubert (PR #8); visual + fusion baselines on voice-disjoint splits (PR #9). Lip-sync consistency branch: pair-manifest builder, dataset, model, training + val-only evaluator, WavLM baseline metrics (`feat/lip-sync-consistency`, 379/379 tests green).
-- **Next:** Phase 6 — single consolidated test-split pass per checkpoint, then `reports/final_report.md`. After that, optional `feat/dataset-expansion`, `feat/multi-engine-spoof`, and/or `feat/generated-video-batch-eval` (see TODO).
-- **To resume:** read this file, then `docs/workflow.md` (Phase 6) and `docs/roadmap-audio-visual-speech-detection.md` Revision 1. Always pre-flight training with `python -m src.data.feature_store --validate --view <view> [--backend <backend>]`. Honor the hard constraints — especially the per-cap-regime frozen splits, seed 42, single test evaluation, and feature-only training input. Use `feature_store.py` (not legacy `dataset.py`) for any new dataset code. Val metric snapshots live at `reports/val_eval/all_checkpoints_val_metrics.json`.
+- **Next:** `feat/pretrained-syncnet`, then `feat/generated-video-batch-fusion`.
+- **To resume:** read this file and `README.md`. Always pre-flight feature-store training with `python -m src.data.feature_store --validate --view <view> [--backend <backend>]`. Honor the hard constraints — especially frozen splits, seed 42, single test evaluation, and feature-only core training input. Use `feature_store.py` (not legacy `dataset.py`) for dataset code. Val metric snapshots live at `report/val_eval/all_checkpoints_val_metrics.json`.

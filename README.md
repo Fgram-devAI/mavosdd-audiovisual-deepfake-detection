@@ -1,24 +1,45 @@
 # Audiovisual Deepfake Detection
 
-Late-fusion detector for MAVOS-DD videos, combining frozen audio embeddings
-(Wav2Vec2 / WavLM / HuBERT) with MediaPipe lip-landmark motion features.
+Multimodal deepfake detection on a capped MAVOS-DD subset. The project keeps
+three related labels separate instead of pretending they are one thing:
 
-Phase 1–5 baselines (PRs #7–#9) were trained on the original **1,000-video
-cap** (500 real, 250 EchoMimic, 250 MEMO). The roadmap is now revised to
-**~4,149 videos** across five MAVOS-DD source folders (real, EchoMimic,
-MEMO, LivePortrait, Sonic) for Phase 6+ work — see
-[`docs/roadmap-audio-visual-speech-detection.md`](docs/roadmap-audio-visual-speech-detection.md)
-Revision 1.
+| Head | Question | Positive class |
+|---|---|---|
+| Audio anti-spoof | Is the speech audio generated? | ElevenLabs / Google / OpenAI / other TTS |
+| Visual fake-video | Is the face/video generated? | EchoMimic / MEMO / LivePortrait / Sonic |
+| Audio-visual sync | Does the mouth motion match the audio? | Async / inconsistent pair |
 
-The pipeline is intentionally feature-first:
+The final detector should combine these as separate signals:
 
-1. Stream a capped MAVOS-DD subset.
-2. Extract frozen audio embeddings and MediaPipe lip-landmark sequences.
-3. Train a compact (< 2M trainable params) late-fusion classifier on
-   serialized `.npy`/`.npz` features only — raw video never enters the
-   training loop.
-4. Evaluate once on the locked test split and package a reproducible
-   predictor.
+```text
+deepfake_score = fusion(audio_fake_score, visual_fake_score, av_inconsistent_score)
+```
+
+That distinction matters: EchoMimic/MEMO/LivePortrait/Sonic clips usually carry
+original real audio, so the audio head should not call them fake. The visual
+head catches generated video, and the sync head catches mismatched audio-mouth
+pairs.
+
+Implementation details and the full working memory live in
+[`CLAUDE.md`](CLAUDE.md). This README keeps only the public repro commands,
+headline metrics, and current roadmap.
+
+## Roadmap Snapshot
+
+```mermaid
+flowchart TD
+    A["Data ingest<br/>MAVOS-DD capped subset"] --> B["Derived manifests<br/>speech / visual / fusion"]
+    B --> C["Audio stores<br/>Wav2Vec2 / WavLM / HuBERT / mel"]
+    B --> D["Lip stores<br/>MediaPipe landmarks"]
+    C --> E[Audio anti-spoof baselines]
+    D --> F[Legacy lip-only baseline]
+    C --> G["Audio channel audits<br/>codec match + normalization"]
+    G --> H[SyncNet-style consistency head]
+    C --> I["Visual frame baseline<br/>EfficientNetB0 notebook"]
+    I --> J[Next: pretrained SyncNet / stronger AV sync]
+    H --> J
+    J --> K["Final: generated-video batch fusion<br/>score audio + visual + sync"]
+```
 
 ## Quick Start
 
@@ -46,7 +67,7 @@ Smoke-test the model module:
 python -m src.models.late_fusion
 ```
 
-## Pipeline (Phase 1–4 — Data Preparation)
+## Repro Commands
 
 Each step writes gitignored artifacts under `data/`. Pass `--help` to any
 module for full flags. The fetch is deterministic for a fixed MAVOS-DD
@@ -88,8 +109,8 @@ downloader is idempotent on re-runs.
    | ElevenLabs TTS     | `scripts/synthesize_tts_from_transcripts.py`           | Text → speech, paid API                |
    | ElevenLabs STS     | `scripts/convert_real_speech_elevenlabs.py`            | Speech → speech (preserves prosody)    |
    | Google Neural2 TTS | `scripts/synthesize_google_tts_from_transcripts.py`    | Paid API; default voice rotation       |
-   | Coqui XTTS-v2      | `scripts/synthesize_coqui_xtts_from_transcripts.py`    | Local, free; Phase 6+ multi-engine     |
-   | OpenAI TTS         | `scripts/synthesize_openai_tts_from_transcripts.py`    | Paid API; Phase 6+ multi-engine        |
+   | Coqui XTTS-v2      | `scripts/synthesize_coqui_xtts_from_transcripts.py`    | Local, free                            |
+   | OpenAI TTS         | `scripts/synthesize_openai_tts_from_transcripts.py`    | Paid API                               |
 
 5. **Build derived manifests** (`audio_spoof`, `visual_speech`,
    `fusion_speech`).
@@ -170,11 +191,19 @@ acoustic probe still reached LR ROC-AUC 0.9713 / RF ROC-AUC 0.9889, and the
 normalized mel-CNN reached ROC-AUC 0.99994. Full details are in
 [`report/audio_channel_normalization_audit.md`](report/audio_channel_normalization_audit.md).
 
-## Phase 5 Baselines — Results
+## Validation Results
 
-Validation-only model selection; the test split is locked for Phase 6's
-single consolidated pass. Honest in-distribution val ROC-AUC on the
-**codec-matched + voice-disjoint** inputs:
+Validation-only model selection; the test split is locked for the final
+consolidated pass.
+
+### Audio Anti-Spoof
+
+Audio labels answer only: **is the speech audio generated?** Original MAVOS-DD
+audio is bonafide even when the video source is EchoMimic/MEMO/LivePortrait/
+Sonic.
+
+Honest in-distribution val ROC-AUC on the **codec-matched + voice-disjoint**
+inputs:
 
 | Modality               | wav2vec2           | wavlm              | hubert             |
 |------------------------|--------------------|--------------------|--------------------|
@@ -203,7 +232,77 @@ Full per-checkpoint metric battery (roc_auc, eer, eer_threshold, f1,
 precision, recall, confusion, per-provider recall) is committed at
 [`report/val_eval/all_checkpoints_val_metrics.json`](report/val_eval/all_checkpoints_val_metrics.json).
 
-### Known Limitations
+### Audio Channel Normalization
+
+The first acoustic probe showed severe channel shortcuts on the voice-disjoint
+audio-spoof manifest:
+
+| Probe | Original ROC-AUC | Normalized ROC-AUC |
+|---|---:|---:|
+| Logistic regression on acoustic stats | 0.9914 | 0.9713 |
+| Random forest on acoustic stats | 0.9970 | 0.9889 |
+
+Normalization used silence trim, 7 kHz lowpass, EBU R128 loudness
+normalization, and peak safety on codec-matched WAVs. It reduced obvious
+channel cues but did not remove separability. The normalized mel-spectrogram
+notebook likewise stayed near saturated: ROC-AUC **0.99994**. The takeaway is
+that generator fingerprints survive simple channel normalization. See
+[`report/audio_channel_normalization_audit.md`](report/audio_channel_normalization_audit.md).
+
+### Audio-Visual Sync
+
+The current sync branch trains a lightweight SyncNet-style consistency head
+over WavLM audio embeddings plus MediaPipe lip landmarks. Positive class is
+`async_inconsistent_pair`.
+
+| Model | Val ROC-AUC | EER | F1 | Honest read |
+|---|---:|---:|---:|---|
+| WavLM + BiGRU consistency head | 0.8409 | 0.2527 | 0.8261 | Strong on generated-audio negatives, weak on real-audio mismatches |
+
+Breakdown:
+
+| Negative type | Recall |
+|---|---:|
+| generated_same_transcript | 1.0000 |
+| mismatched_generated | 0.9992 |
+| mismatched_original | 0.4831 |
+
+So this is not yet a true pretrained SyncNet result. It mostly catches the
+synthetic-audio side of the async task. Full metrics:
+[`report/val_eval/lipsync_wavlm_val.txt`](report/val_eval/lipsync_wavlm_val.txt).
+
+### Visual Fake-Video Baseline
+
+The revised visual notebook asks a different question from audio anti-spoof:
+**real video vs generated video**.
+
+```text
+real -> 0
+echomimic / memo / liveportrait / sonic -> 1
+```
+
+EfficientNetB0 frame baseline, 20 frames per video, frozen train/val split:
+
+| Val ROC-AUC | EER | F1 | Precision | Recall |
+|---:|---:|---:|---:|---:|
+| 0.9853 | 0.0671 | 0.9167 | 0.8988 | 0.9352 |
+
+Per-source result:
+
+| Source | Metric | Value |
+|---|---|---:|
+| real | specificity | 0.9307 |
+| echomimic | fake recall | 1.0000 |
+| memo | fake recall | 1.0000 |
+| liveportrait | fake recall | 0.6596 |
+| sonic | fake recall | 1.0000 |
+
+This result is useful but confounded: a codec/resolution audit found no shared
+video signatures across sampled source folders, so the CNN can exploit
+resolution/FPS/encoder artifacts. The notebook reports this explicitly. Summary:
+[`report/visual_frame_baseline/visual_frame_baseline_efficientnet_b0_val.json`](report/visual_frame_baseline/visual_frame_baseline_efficientnet_b0_val.json).
+
+## Known Limitations
 
 **Per-TTS-engine spectral and channel fingerprinting.** WavLM and HuBERT
 saturate at val ROC-AUC = 1.0 even after codec matching, voice-disjoint
@@ -214,25 +313,27 @@ bandwidth/spectral-envelope cues that are not removed by the current
 normalization pass.
 The trained head is therefore closer to a *two-class TTS-engine detector*
 (ElevenLabs OR Google TTS vs MAVOS-DD bonafide) than a generalized
-deepfake detector — a new engine the model has not seen will likely evade
-detection. The honest evaluation protocol is **engine-disjoint** /
-**leave-one-engine-out** across ≥ 3 generators, scoped as the future
-`feat/multi-engine-spoof` branch (Coqui XTTS-v2 and OpenAI TTS entry
-points already shipped in `scripts/`).
+deepfake detector — a new engine the model has not seen may evade detection.
+The honest evaluation protocol is engine-disjoint / leave-one-engine-out across
+multiple generators.
 
-**Visual-only collapses to a constant predictor.** Val confusion
-`tn=0 / fp=150 / fn=0 / tp=217` — the BiGRU labels every row as spoof.
-ROC-AUC 0.57 confirms the underlying scores don't separate the classes at
-any threshold. Structural cause: every video contributes a paired bonafide
-row and one or more matched spoof rows, all sharing the same
-`source_video_id` and therefore the **same `.npz` lip features**. A model
-asked to discriminate two rows whose input is byte-identical cannot do
-better than class-frequency bias.
+**Legacy lip-only visual collapse.** The old BiGRU lip-only baseline used the
+same `.npz` lip features for matched bonafide and matched spoof rows of the
+same source video, so its ROC-AUC 0.5688 result is structurally expected. It is
+not the same task as the new visual frame baseline.
 
-**Late fusion by concat ≈ audio-only.** Fusion wav2vec2 0.9509 vs audio
-wav2vec2 0.9508 — statistically indistinguishable. Concat fusion can't
-carry cross-modal interaction when one stream is at chance; it just
-inherits the dominant stream. The signal that *would* help is
-**audio-visual consistency** (does the mouth motion match the audio?) —
-a SyncNet-style lip-sync head. That requires a roadmap revision and is
-explicitly deferred.
+**Visual frame baseline is likely channel-confounded.** EfficientNetB0 reaches
+ROC-AUC 0.9853, but source folders have distinct resolution/FPS/codec
+signatures. The number is a useful baseline, not proof of semantic fake-face
+generalization.
+
+**Concat fusion ≈ audio-only.** The old late-fusion model inherits the dominant
+audio score. Final fusion should combine explicit head scores:
+`audio_fake_score`, `visual_fake_score`, and `av_inconsistent_score`.
+
+## Next Branches
+
+1. `feat/pretrained-syncnet` — replace or augment the lightweight consistency
+   head with a pretrained/raw-frame SyncNet-style mouth-audio model.
+2. `feat/generated-video-batch-fusion` — score the incoming fully AI-generated
+   videos with the three heads and evaluate final multimodal fusion.
