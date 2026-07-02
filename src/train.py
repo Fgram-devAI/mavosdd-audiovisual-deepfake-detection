@@ -11,6 +11,7 @@ import numpy as np
 import torch
 import yaml
 from torch import nn
+from tqdm.auto import tqdm
 
 from src import common, evaluate
 from src.data.feature_store import (
@@ -258,11 +259,13 @@ def run_training(
     best_val_metrics: dict = {}
     epochs_without_improve = 0
 
-    for epoch in range(1, cfg.epochs + 1):
+    epoch_bar = tqdm(range(1, cfg.epochs + 1), desc=f"{cfg.run_name} epochs", unit="ep")
+    for epoch in epoch_bar:
         model.train()
         train_loss = 0.0
         n_seen = 0
-        for batch in train_loader:
+        batch_bar = tqdm(train_loader, desc=f"ep {epoch:02d} train", unit="b", leave=False)
+        for batch in batch_bar:
             labels = batch["label"].float().to(dev)
             optim.zero_grad()
             logits = _forward_batch(model, batch, cfg.modality, dev)
@@ -272,6 +275,7 @@ def run_training(
             bsz = labels.size(0)
             train_loss += float(loss) * bsz
             n_seen += bsz
+            batch_bar.set_postfix(loss=f"{float(loss):.4f}")
         train_loss = train_loss / max(n_seen, 1)
 
         val_metrics = _val_metric_battery(model, val_loader, dev, cfg.modality)
@@ -291,8 +295,29 @@ def run_training(
             epochs_without_improve = 0
         else:
             epochs_without_improve += 1
-            if epochs_without_improve > cfg.patience:
-                break
+
+        epoch_bar.set_postfix(
+            train_loss=f"{train_loss:.4f}",
+            val_auc=f"{val_metrics['roc_auc']:.4f}",
+            val_eer=f"{val_metrics['eer']:.4f}",
+            best_auc=f"{best_auc:.4f}@{best_epoch}",
+            patience=f"{epochs_without_improve}/{cfg.patience}",
+        )
+        tqdm.write(
+            f"[{cfg.run_name}] epoch {epoch:02d}/{cfg.epochs} "
+            f"train_loss={train_loss:.4f} "
+            f"val_auc={val_metrics['roc_auc']:.4f} val_eer={val_metrics['eer']:.4f} "
+            f"best={best_auc:.4f}@{best_epoch} "
+            f"patience={epochs_without_improve}/{cfg.patience}"
+        )
+
+        if epochs_without_improve > cfg.patience:
+            tqdm.write(
+                f"[{cfg.run_name}] early stop at epoch {epoch}: "
+                f"no val_auc improvement for {epochs_without_improve} epochs > patience {cfg.patience}"
+            )
+            epoch_bar.close()
+            break
 
     assert best_state is not None, "training produced no best checkpoint"
 
