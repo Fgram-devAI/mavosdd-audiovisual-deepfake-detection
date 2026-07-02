@@ -5,25 +5,10 @@ venv/
 .env
 .claude/
 
-data/raw/
-data/quarantine/
-data/manifest.csv
-data/quarantine_log.csv
-data/splits/*.csv
-data/audio_wav/
-data/audio_wav_codec_matched/
-data/transcripts/
-data/tts_audio/
-data/features/audio/
-data/features/lips/
-data/features/audio_wav2vec2/
-data/features/audio_wavlm/
-data/features/audio_hubert/
-data/features/audio_mel/
-data/features/audio_wav2vec2_codec/
-data/features/audio_wavlm_codec/
-data/features/audio_hubert_codec/
-data/derived/
+# All pipeline artifacts (raw, features, derived manifests, splits, backups).
+# Nothing under data/ is tracked; if you ever want a small tracked file here,
+# add an explicit "!data/<name>" re-include below.
+data/
 models/checkpoints/
 runs/
 release/
@@ -47,10 +32,6 @@ superpowers/
 docs/prompts/
 docs/superpowers/
 docs/presentation-guide.md
-data/splits.phase1_5_backup/
-data/manifest.phase1_5_backup.csv
-data/derived.phase1_5_backup/
-
 # Retired LaTeX workspace; keep the report deliverable under report/.
 latex/
 report/acoustic_probe*/

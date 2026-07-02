@@ -98,12 +98,12 @@ downloader is idempotent on re-runs.
    python -m src.data.build_speech_manifests
    ```
 
-## Anti-Leakage (Phase 4 Hardening)
+## Anti-Leakage And Audio Audits
 
-Two confounders surfaced during the mel-CNN baseline (PR #7) and were
-neutralized in place. Training and evaluation default to the neutralized
-inputs; the original (leaky) embeddings/splits remain on disk but are
-unused by the merged baselines.
+Two hard label leaks surfaced during the mel-CNN baseline (PR #7) and were
+fixed in place: codec footprint and voice overlap. Training and evaluation
+default to the codec-matched + voice-disjoint inputs; the original leaky
+embeddings/splits remain on disk but are unused by the merged baselines.
 
 **Codec footprint match.** Bonafide rows are clean 16 kHz PCM WAV; every
 TTS spoof row is lossy MP3 (ElevenLabs 44.1 kHz / 128 kbps, Google TTS
@@ -142,6 +142,34 @@ codec-matched WAVs, so this single file neutralizes **both** confounders.
 The `apply_voice_split` helper rewrites only the `split` column of the
 visual/fusion manifests, preserving `pair_label_binary` byte-identically.
 
+**Audio channel normalization audit.** A follow-up branch normalized the
+voice-disjoint, codec-matched WAVs with silence trim, 7 kHz lowpass,
+EBU R128 loudness normalization, and peak safety:
+
+```bash
+python -m src.data.normalize_audio_channel \
+  --manifest data/derived/audio_spoof_manifest_voice_split.csv \
+  --out-manifest data/derived/audio_spoof_manifest_normalized.csv \
+  --out-dir data/derived/audio_normalized \
+  --overwrite
+
+for B in wav2vec2 wavlm hubert; do
+  python -m src.features.extract_audio_embeddings --backend $B \
+    --manifest data/derived/audio_spoof_manifest_normalized.csv \
+    --out-dir data/features/audio_${B}_normalized
+done
+
+python -m src.features.extract_mel \
+  --manifest data/derived/audio_spoof_manifest_normalized.csv \
+  --out-dir data/features/audio_mel_normalized
+```
+
+The audit result is intentionally conservative: normalization reduced obvious
+channel cues, but did **not** remove audio-only separability. The normalized
+acoustic probe still reached LR ROC-AUC 0.9713 / RF ROC-AUC 0.9889, and the
+normalized mel-CNN reached ROC-AUC 0.99994. Full details are in
+[`report/audio_channel_normalization_audit.md`](report/audio_channel_normalization_audit.md).
+
 ## Phase 5 Baselines — Results
 
 Validation-only model selection; the test split is locked for Phase 6's
@@ -173,15 +201,17 @@ python -m src.evaluate --checkpoint models/checkpoints/best_<name>.pt --split va
 
 Full per-checkpoint metric battery (roc_auc, eer, eer_threshold, f1,
 precision, recall, confusion, per-provider recall) is committed at
-[`reports/val_eval/all_checkpoints_val_metrics.json`](reports/val_eval/all_checkpoints_val_metrics.json).
+[`report/val_eval/all_checkpoints_val_metrics.json`](report/val_eval/all_checkpoints_val_metrics.json).
 
 ### Known Limitations
 
-**Per-TTS-engine spectral fingerprinting.** WavLM and HuBERT saturate at
-val ROC-AUC = 1.0 even after both confounders are neutralized; Wav2Vec2
-reaches 0.95. The remaining shortcut is generator fingerprinting — every
-TTS engine leaves vocoder/encoder artifacts (high-frequency residuals,
-silence padding, bandwidth ceilings) invariant to voice, codec, and text.
+**Per-TTS-engine spectral and channel fingerprinting.** WavLM and HuBERT
+saturate at val ROC-AUC = 1.0 even after codec matching, voice-disjoint
+splits, and channel normalization; Wav2Vec2 remains around 0.96. The remaining
+shortcut is generator and dataset fingerprinting: every TTS engine leaves
+vocoder/encoder artifacts, prosody/timbre regularities, silence structure, and
+bandwidth/spectral-envelope cues that are not removed by the current
+normalization pass.
 The trained head is therefore closer to a *two-class TTS-engine detector*
 (ElevenLabs OR Google TTS vs MAVOS-DD bonafide) than a generalized
 deepfake detector — a new engine the model has not seen will likely evade
