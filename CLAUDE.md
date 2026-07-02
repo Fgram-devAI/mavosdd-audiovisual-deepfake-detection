@@ -79,6 +79,8 @@ Phases 1–5 complete. MAVOS-DD subset ingested (1000 native videos at the origi
   - **Fusion = audio-only.** Concat fusion can't carry cross-modal interaction when one stream is at chance; fusion just inherits the audio component's score. The signal that would help is **audio-visual lip-sync** (deferred — would require a roadmap revision for the consistency-head architecture).
   - Full per-checkpoint val metric battery (roc_auc, eer, eer_threshold, f1, precision, recall, confusion, per_provider_recall) is in `reports/val_eval/all_checkpoints_val_metrics.json`.
 
+- **`feat/lip-sync-consistency` shipped** (2026-07-02): SyncNet-style consistency head (WavLM + BiGRU) trained on a deterministic pair manifest (train/val only; test locked out of the manifest itself in this branch). Val ROC-AUC **0.8409**, EER **0.2527**, F1 **0.826**, positive-sync accuracy **0.748**. Per-negative-type recall reveals the model is really an audio-spoof detector: `generated_same_transcript=1.00`, `mismatched_generated=1.00`, `mismatched_original=0.48`. Full metrics: `report/val_eval/lipsync_wavlm_val.txt`.
+
 ## Workflow (phase-based — see `docs/workflow.md`)
 
 Work is organized into **phases**, not calendar days. Detail lives in `docs/workflow.md`.
@@ -115,10 +117,10 @@ Dataset `unibuc-cs/MAVOS-DD`, split `train`, language english; caps real:500 / e
 **Then (optional, after Phase 6):**
 - `feat/dataset-expansion` — re-ingest at the Revision-1 cap (~4,149 videos), re-freeze splits, re-extract features/embeddings. Phase 1–5 baselines remain valid for the old cap.
 - `feat/multi-engine-spoof` — wire up `scripts/synthesize_coqui_xtts_from_transcripts.py` and `scripts/synthesize_openai_tts_from_transcripts.py`; run leave-one-engine-out (LOEO) evaluation across ≥ 3 TTS engines for the engine-fingerprint generalization story.
-- `feat/av-consistency-head` — audio-visual lip-sync as a real multimodal signal. Three flavors (lite in-domain contrastive head → frozen pretrained SyncNet → full SyncNet-style training); each requires its own roadmap revision and spec.
+- ~~`feat/av-consistency-head`~~ — superseded by `feat/lip-sync-consistency` (shipped 2026-07-02). The remaining audio-visual work is `feat/generated-video-batch-eval` — evaluate full generated videos with explicit labels for audio fake / visual fake / audio-visual consistency / source-provider family. Uses the `models/checkpoints/best_lipsync_wavlm.pt` checkpoint from this branch as one input. Regenerate the pair manifest with `--splits train val test` and add an `--allow-test` gate before touching the test split.
 
 ## Handoff notes
 
-- **Done:** ingestion, frozen splits, derived manifests, three codec-matched audio embedding stores, MediaPipe lip features, feature-store dataset loader + validate CLI (PR #6); mel-CNN baseline (PR #7); audio anti-spoof baselines wav2vec2/wavlm/hubert (PR #8); visual + fusion baselines on voice-disjoint splits (PR #9). 223/223 tests green on `feat/visual-and-fusion-baseline`.
-- **Next:** Phase 6 — single consolidated test-split pass per checkpoint, then `reports/final_report.md`. After that, optional `feat/dataset-expansion`, `feat/multi-engine-spoof`, and/or `feat/av-consistency-head` (see TODO).
+- **Done:** ingestion, frozen splits, derived manifests, three codec-matched audio embedding stores, MediaPipe lip features, feature-store dataset loader + validate CLI (PR #6); mel-CNN baseline (PR #7); audio anti-spoof baselines wav2vec2/wavlm/hubert (PR #8); visual + fusion baselines on voice-disjoint splits (PR #9). Lip-sync consistency branch: pair-manifest builder, dataset, model, training + val-only evaluator, WavLM baseline metrics (`feat/lip-sync-consistency`, 379/379 tests green).
+- **Next:** Phase 6 — single consolidated test-split pass per checkpoint, then `reports/final_report.md`. After that, optional `feat/dataset-expansion`, `feat/multi-engine-spoof`, and/or `feat/generated-video-batch-eval` (see TODO).
 - **To resume:** read this file, then `docs/workflow.md` (Phase 6) and `docs/roadmap-audio-visual-speech-detection.md` Revision 1. Always pre-flight training with `python -m src.data.feature_store --validate --view <view> [--backend <backend>]`. Honor the hard constraints — especially the per-cap-regime frozen splits, seed 42, single test evaluation, and feature-only training input. Use `feature_store.py` (not legacy `dataset.py`) for any new dataset code. Val metric snapshots live at `reports/val_eval/all_checkpoints_val_metrics.json`.
