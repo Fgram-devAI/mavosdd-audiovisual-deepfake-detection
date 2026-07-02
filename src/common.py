@@ -32,6 +32,8 @@ VISUAL_SPEECH_MANIFEST = DERIVED_DIR / "visual_speech_manifest.csv"
 FUSION_SPEECH_MANIFEST = DERIVED_DIR / "fusion_speech_manifest.csv"
 VISUAL_SPEECH_MANIFEST_VOICE_SPLIT = DERIVED_DIR / "visual_speech_manifest_voice_split.csv"
 FUSION_SPEECH_MANIFEST_VOICE_SPLIT = DERIVED_DIR / "fusion_speech_manifest_voice_split.csv"
+LIPSYNC_PAIRS_MANIFEST = DERIVED_DIR / "lipsync_pairs_manifest.csv"
+LIPSYNC_PAIRS_PROVENANCE = DERIVED_DIR / "lipsync_pairs_manifest.provenance.json"
 AUDIO_WAV_CODEC_MATCHED_DIR = DATA_ROOT / "audio_wav_codec_matched"
 
 CAPS = {
