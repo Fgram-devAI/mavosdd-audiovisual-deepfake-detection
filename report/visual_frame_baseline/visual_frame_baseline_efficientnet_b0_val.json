@@ -1,0 +1,54 @@
+{
+  "backbone": "efficientnet_b0",
+  "device": "mps",
+  "epoch_history": [
+    {
+      "epoch": 1,
+      "train_loss": 0.211659
+    },
+    {
+      "epoch": 2,
+      "train_loss": 0.15934
+    },
+    {
+      "epoch": 3,
+      "train_loss": 0.148052
+    },
+    {
+      "epoch": 4,
+      "train_loss": 0.142031
+    },
+    {
+      "epoch": 5,
+      "train_loss": 0.139535
+    }
+  ],
+  "epochs": 5,
+  "manifest": "data/derived/visual_speech_manifest_voice_split.csv",
+  "notebook": "notebooks/03_visual_frame_baseline_extended_data.ipynb",
+  "num_frames": 20,
+  "per_source_recall_or_specificity": {
+    "echomimic": 1.0,
+    "liveportrait": 0.6595744680851063,
+    "memo": 1.0,
+    "real": 0.9306666666666666,
+    "sonic": 1.0
+  },
+  "positive_class": "fake_video",
+  "seed": 42,
+  "train_videos": 2904,
+  "val_confusion": {
+    "fn": 16,
+    "fp": 26,
+    "tn": 349,
+    "tp": 231
+  },
+  "val_eer": 0.06705533063427797,
+  "val_eer_threshold": 0.20403509242460133,
+  "val_f1": 0.9166666666666666,
+  "val_precision": 0.8988326848249028,
+  "val_recall": 0.9352226720647774,
+  "val_roc_auc": 0.9853495276653172,
+  "val_videos": 622,
+  "val_videos_aggregated": 622
+}
