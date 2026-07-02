@@ -70,6 +70,17 @@ The normalized checkpoints point at normalized feature directories, so the near-
 
 The key result is that normalization reduced shallow acoustic leakage but did not remove it.
 
+Summary comparison:
+
+| Model / probe | Codec ROC-AUC | Normalized ROC-AUC | Read |
+|---|---:|---:|---|
+| acoustic LR probe | 0.9914 | 0.9713 | reduced, still high |
+| acoustic RF probe | 0.9971 | 0.9889 | reduced, still high |
+| wav2vec2 MLP | 0.9688 | 0.9647 | essentially unchanged |
+| WavLM MLP | 0.9999 | 0.9996 | saturated |
+| HuBERT MLP | 0.9999 | 0.9998 | saturated |
+| mel-CNN | 1.0000 | 0.9999 | saturated |
+
 Before normalization, the hand-crafted acoustic probe was nearly saturated:
 
 ```text
