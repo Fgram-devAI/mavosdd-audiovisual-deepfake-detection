@@ -1,0 +1,5 @@
+split=val n=3168 positive_class=async_inconsistent_pair roc_auc=0.8409 eer=0.2527 threshold_used=0.6726 f1=0.8261
+confusion={'tn': 465, 'fp': 157, 'fn': 644, 'tp': 1902}
+positive_sync_accuracy=0.7476
+per_negative_type_recall={'generated_same_transcript': 1.0, 'mismatched_generated': 0.9991961414790996, 'mismatched_original': 0.48311897106109325}
+per_provider_recall={'elevenlabs': 1.0, 'google_tts': 1.0, 'openai_tts': 0.9981981981981982, 'original': 0.48311897106109325}
