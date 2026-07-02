@@ -105,8 +105,8 @@ def test_main_skips_existing_and_writes_new(tmp_path, monkeypatch):
     fail_csv = tmp_path / "sf.csv"
 
     fake_adapter = MagicMock()
-    fake_adapter.encode_visual.return_value = np.zeros((100, 768), dtype=np.float32)
-    fake_adapter.encode_audio.return_value = np.zeros((50, 768), dtype=np.float32)
+    fake_adapter.encode_visual.return_value = np.zeros((50, 768), dtype=np.float32)
+    fake_adapter.encode_audio.return_value = np.zeros((100, 768), dtype=np.float32)
 
     with patch("src.features.extract_avhubert_embeddings.AVHubertBackend") as AB, \
          patch("src.features.extract_avhubert_embeddings.extract_mouth_crops",
@@ -140,7 +140,7 @@ def test_main_records_failure_on_mouth_detection_error(tmp_path):
     fail_csv = tmp_path / "sf.csv"
 
     fake_adapter = MagicMock()
-    fake_adapter.encode_audio.return_value = np.zeros((50, 768), dtype=np.float32)
+    fake_adapter.encode_audio.return_value = np.zeros((100, 768), dtype=np.float32)
 
     with patch("src.features.extract_avhubert_embeddings.AVHubertBackend") as AB, \
          patch("src.features.extract_avhubert_embeddings.extract_mouth_crops",
