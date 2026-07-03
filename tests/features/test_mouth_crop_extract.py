@@ -66,3 +66,16 @@ def test_extract_bgr_spec_produces_three_channels():
         mo.return_value = (np.zeros((100, 480, 640, 3), dtype=np.uint8), 25.0)
         out = extract_mouth_crops(Path("/dev/null"), SYNCNET_SPEC)
     assert out.shape[2] == 3
+
+
+def test_detect_mouth_bbox_is_cpu_only_and_returns_none_on_blank_frame():
+    """Regression guard: `_detect_mouth_bbox` must not require MediaPipe/OpenGL.
+
+    On macOS the MediaPipe FaceMesh path fails with `Could not create an
+    NSOpenGLPixelFormat`. The Haar-cascade replacement must run on a plain
+    numpy frame with zero side effects.
+    """
+    from src.features.mouth_crop_extract import _detect_mouth_bbox
+
+    frame = np.zeros((480, 640, 3), dtype=np.uint8)
+    assert _detect_mouth_bbox(frame) is None
