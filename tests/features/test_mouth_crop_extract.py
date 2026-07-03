@@ -12,7 +12,7 @@ def test_specs_are_backend_specific():
     from src.features.mouth_crop_extract import SYNCNET_SPEC, AVHUBERT_SPEC
 
     assert SYNCNET_SPEC.stack_size == 5
-    assert SYNCNET_SPEC.target_size == (96, 96)
+    assert SYNCNET_SPEC.target_size == (96, 48)  # cv2 (W, H) → 48x96 crops
     assert SYNCNET_SPEC.color == "bgr"
     assert AVHUBERT_SPEC.stack_size == 25
     assert AVHUBERT_SPEC.target_size == (88, 88)

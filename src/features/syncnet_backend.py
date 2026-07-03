@@ -1,10 +1,11 @@
 """Adapter around the pretrained SyncNet (Prajwal/Wav2Lip lineage) checkpoint.
 
-Architecture pinned to the SyncNet expert from Rudrabha/Wav2Lip
-(https://github.com/Rudrabha/Wav2Lip, commit ``18f5b0d`` — file
-``models/syncnet.py``, class ``SyncNet_color``). The class ``_SyncNetColor``
-below is a byte-faithful copy of that upstream definition, so
-``load_state_dict(strict=True)`` succeeds on the released expert weights.
+Architecture pinned to the SyncNet expert from Rudrabha/Wav2Lip master
+(https://github.com/Rudrabha/Wav2Lip/blob/master/models/syncnet.py, class
+``SyncNet_color``). The class ``_SyncNetColor`` below is a byte-faithful copy
+of that upstream definition (17 face-encoder blocks / 14 audio-encoder blocks),
+which matches the released ``lipsync_expert.pth`` weights so
+``load_state_dict(strict=True)`` succeeds.
 """
 from __future__ import annotations
 
@@ -18,12 +19,13 @@ from torch import nn
 from src.features.mouth_crop_extract import SYNCNET_SPEC, MouthCropSpec
 
 # ---------------------------------------------------------------------------
-# Vendored architecture — Rudrabha/Wav2Lip @ 18f5b0d (MIT license).
+# Vendored architecture — Rudrabha/Wav2Lip master branch (MIT license).
 #   _Conv2d: models/conv.py::Conv2d
-#   _SyncNetColor: models/syncnetv2.py::SyncNet_color
+#   _SyncNetColor: models/syncnet.py::SyncNet_color
 # Copied verbatim so torch.load_state_dict(strict=True) succeeds on the
-# released SyncNet expert weights. If a future weight release changes tensor
-# shapes, re-pin the upstream commit and re-copy these classes.
+# released SyncNet expert weights (lipsync_expert.pth, 197 MB). If a future
+# weight release changes tensor shapes, re-pin the upstream commit and re-copy
+# these classes.
 # ---------------------------------------------------------------------------
 
 
@@ -51,7 +53,7 @@ class _Conv2d(nn.Module):
 
 
 class _SyncNetColor(nn.Module):
-    """Byte-faithful copy of Wav2Lip's SyncNet_color expert.
+    """Byte-faithful copy of Wav2Lip master's SyncNet_color expert.
 
     Shape contract (from upstream):
       - visual_forward:  (B, 15, 48, 96) — 5 stacked BGR mouth frames concat on
@@ -63,15 +65,25 @@ class _SyncNetColor(nn.Module):
         super().__init__()
         self.face_encoder = nn.Sequential(
             _Conv2d(15, 32, kernel_size=(7, 7), stride=1, padding=3),
+
             _Conv2d(32, 64, kernel_size=5, stride=(1, 2), padding=1),
             _Conv2d(64, 64, kernel_size=3, stride=1, padding=1, residual=True),
             _Conv2d(64, 64, kernel_size=3, stride=1, padding=1, residual=True),
+
             _Conv2d(64, 128, kernel_size=3, stride=2, padding=1),
             _Conv2d(128, 128, kernel_size=3, stride=1, padding=1, residual=True),
             _Conv2d(128, 128, kernel_size=3, stride=1, padding=1, residual=True),
+            _Conv2d(128, 128, kernel_size=3, stride=1, padding=1, residual=True),
+
             _Conv2d(128, 256, kernel_size=3, stride=2, padding=1),
             _Conv2d(256, 256, kernel_size=3, stride=1, padding=1, residual=True),
+            _Conv2d(256, 256, kernel_size=3, stride=1, padding=1, residual=True),
+
             _Conv2d(256, 512, kernel_size=3, stride=2, padding=1),
+            _Conv2d(512, 512, kernel_size=3, stride=1, padding=1, residual=True),
+            _Conv2d(512, 512, kernel_size=3, stride=1, padding=1, residual=True),
+
+            _Conv2d(512, 512, kernel_size=3, stride=2, padding=1),
             _Conv2d(512, 512, kernel_size=3, stride=1, padding=0),
             _Conv2d(512, 512, kernel_size=1, stride=1, padding=0),
         )
@@ -79,14 +91,19 @@ class _SyncNetColor(nn.Module):
             _Conv2d(1, 32, kernel_size=3, stride=1, padding=1),
             _Conv2d(32, 32, kernel_size=3, stride=1, padding=1, residual=True),
             _Conv2d(32, 32, kernel_size=3, stride=1, padding=1, residual=True),
+
             _Conv2d(32, 64, kernel_size=3, stride=(3, 1), padding=1),
             _Conv2d(64, 64, kernel_size=3, stride=1, padding=1, residual=True),
             _Conv2d(64, 64, kernel_size=3, stride=1, padding=1, residual=True),
+
             _Conv2d(64, 128, kernel_size=3, stride=3, padding=1),
             _Conv2d(128, 128, kernel_size=3, stride=1, padding=1, residual=True),
             _Conv2d(128, 128, kernel_size=3, stride=1, padding=1, residual=True),
+
             _Conv2d(128, 256, kernel_size=3, stride=(3, 2), padding=1),
             _Conv2d(256, 256, kernel_size=3, stride=1, padding=1, residual=True),
+            _Conv2d(256, 256, kernel_size=3, stride=1, padding=1, residual=True),
+
             _Conv2d(256, 512, kernel_size=3, stride=1, padding=0),
             _Conv2d(512, 512, kernel_size=1, stride=1, padding=0),
         )

@@ -25,7 +25,9 @@ class MouthCropSpec:
 
 
 SYNCNET_SPEC = MouthCropSpec(
-    target_size=(96, 96),
+    # cv2.resize takes (width, height), so this produces 48-row x 96-col crops
+    # matching Wav2Lip's SyncNet_color contract (B, 15, 48, 96).
+    target_size=(96, 48),
     fps=25,
     window_seconds=0.2,
     stack_size=5,
