@@ -9,6 +9,7 @@ from pathlib import Path
 import numpy as np
 import torch
 from torch import nn
+from tqdm import tqdm
 
 from src import common
 from src.data.lipsync_pretrained_dataset import (
@@ -112,11 +113,13 @@ def train(config: PretrainedTrainConfig) -> None:
 
     best_auc = -1.0
     patience = 0
-    for epoch in range(1, config.epochs + 1):
+    epoch_bar = tqdm(range(1, config.epochs + 1), desc="epochs", unit="epoch")
+    for epoch in epoch_bar:
         head.train()
         tot = 0.0
         n = 0
-        for batch in tl:
+        train_bar = tqdm(tl, desc=f"train e{epoch}", unit="batch", leave=False)
+        for batch in train_bar:
             sf = batch["sync_features"].to(device)
             pv = batch["pooled_visual"].to(device)
             pa = batch["pooled_audio"].to(device)
@@ -126,6 +129,7 @@ def train(config: PretrainedTrainConfig) -> None:
             opt.zero_grad(); loss.backward(); opt.step()
             tot += float(loss.item()) * y.numel()
             n += y.numel()
+            train_bar.set_postfix(loss=f"{tot / max(n, 1):.4f}")
         train_loss = tot / max(n, 1)
 
         head.eval()
@@ -134,7 +138,8 @@ def train(config: PretrainedTrainConfig) -> None:
         scores: list[float] = []
         labels: list[float] = []
         with torch.no_grad():
-            for batch in vl:
+            val_bar = tqdm(vl, desc=f"val e{epoch}", unit="batch", leave=False)
+            for batch in val_bar:
                 sf = batch["sync_features"].to(device)
                 pv = batch["pooled_visual"].to(device)
                 pa = batch["pooled_audio"].to(device)
@@ -145,12 +150,20 @@ def train(config: PretrainedTrainConfig) -> None:
                 vn += y.numel()
                 scores.extend(torch.sigmoid(logits).cpu().numpy().tolist())
                 labels.extend(y.cpu().numpy().tolist())
+                val_bar.set_postfix(loss=f"{vtot / max(vn, 1):.4f}")
         val_loss = vtot / max(vn, 1)
         val_auc = _roc_auc(np.asarray(scores), np.asarray(labels))
 
         with metrics_path.open("a", newline="") as f:
             w = csv.writer(f)
             w.writerow([epoch, f"{train_loss:.6f}", f"{val_loss:.6f}", f"{val_auc:.6f}"])
+
+        epoch_bar.set_postfix(
+            train_loss=f"{train_loss:.4f}",
+            val_loss=f"{val_loss:.4f}",
+            val_auc=f"{val_auc:.4f}",
+            best_auc=f"{max(best_auc, val_auc):.4f}",
+        )
 
         if val_auc > best_auc:
             best_auc = val_auc

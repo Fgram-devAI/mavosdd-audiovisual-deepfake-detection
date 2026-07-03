@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Iterable, Sequence
 
 import numpy as np
+from tqdm import tqdm
 
 from src import common
 from src.features.mouth_crop_extract import (
@@ -148,10 +149,10 @@ def main(argv: list[str] | None = None) -> int:
         args.manifest, splits=tuple(args.splits), limit=args.limit,
     ))
     visuals, audios = unique_visual_and_audio_units(rows, raw_video_root=args.raw_video_root)
-    for vid, path in visuals:
+    for vid, path in tqdm(visuals, desc="avhubert visual", unit="video"):
         _extract_visual_unit(vid, path, args.out_visual_dir, adapter, args.failures_csv,
                              overwrite=args.overwrite)
-    for aid, path in audios:
+    for aid, path in tqdm(audios, desc="avhubert audio", unit="clip"):
         _extract_audio_unit(aid, path, args.out_audio_dir, adapter, args.failures_csv,
                             overwrite=args.overwrite)
     return 0
