@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from src.common import AVHUBERT_CKPT_PATH, LIPSYNC_PAIRS_MANIFEST, REPORT_VAL_EVAL_DIR
+from src.features.avhubert_backend import _register_avhubert_modules
 
 OUT_JSON = REPORT_VAL_EVAL_DIR / "task0_avhubert.json"
 OUT_MD = REPORT_VAL_EVAL_DIR / "task0_avhubert_feasibility.md"
@@ -63,6 +64,7 @@ def load_avhubert(checkpoint: Path) -> Any:
             h.update(block)
     sha = h.hexdigest()
 
+    _register_avhubert_modules()
     models, _cfg, _task = checkpoint_utils.load_model_ensemble_and_task([str(checkpoint)])
     model = models[0].eval()
 

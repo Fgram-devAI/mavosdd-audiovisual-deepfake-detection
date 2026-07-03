@@ -2,12 +2,49 @@
 from __future__ import annotations
 
 import hashlib
+import sys
 from pathlib import Path
 
 import numpy as np
 import torch
 
 from src.features.mouth_crop_extract import AVHUBERT_SPEC, MouthCropSpec
+
+
+def _register_avhubert_modules() -> None:
+    """Register AV-HuBERT's custom Fairseq task/model modules.
+
+    The editable Fairseq install only registers built-in Fairseq tasks. The
+    AV-HuBERT checkpoint needs the sibling repo's `avhubert` package imported
+    so `av_hubert_pretraining` and `av_hubert` land in Fairseq registries.
+    """
+    import fairseq  # noqa: F401
+
+    candidates = [
+        Path(__file__).resolve().parents[3] / "av_hubert",
+        Path(__file__).resolve().parents[4] / "av_hubert",
+        Path.home() / "Documents" / "Projects" / "av_hubert",
+    ]
+    for candidate in candidates:
+        if (candidate / "avhubert" / "__init__.py").exists():
+            if str(candidate) not in sys.path:
+                # Append, do not prepend: the repo root also has a `fairseq/`
+                # directory that can shadow the editable Fairseq package.
+                sys.path.append(str(candidate))
+            break
+
+    added_argv = False
+    if len(sys.argv) == 1:
+        # AV-HuBERT's modules switch into a local debug import path when
+        # len(sys.argv) == 1. Avoid that branch for `python - <<'PY'` probes.
+        sys.argv.append("avhubert_import")
+        added_argv = True
+    try:
+        import avhubert.hubert_pretraining  # noqa: F401
+        import avhubert.hubert  # noqa: F401
+    finally:
+        if added_argv:
+            sys.argv.pop()
 
 
 class AVHubertBackend:
@@ -31,6 +68,7 @@ class AVHubertBackend:
                 "fairseq is required for AV-HuBERT. See "
                 "report/val_eval/task0_avhubert_feasibility.md for env details."
             ) from e
+        _register_avhubert_modules()
         sha = _sha256(checkpoint)
         models, _cfg, _task = checkpoint_utils.load_model_ensemble_and_task([str(checkpoint)])
         return cls(model=models[0], checkpoint_sha256=sha)
