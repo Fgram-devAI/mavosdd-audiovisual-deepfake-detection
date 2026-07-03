@@ -74,6 +74,44 @@ def test_download_removes_partial_file_on_sha_mismatch(tmp_path):
     assert not dest.exists()
 
 
+def test_download_bootstrap_placeholder_keeps_file_and_returns_sha(tmp_path):
+    _install_scripts_on_path()
+    from scripts import download_syncnet_checkpoint as dl
+
+    payload = b"fresh-download-bytes"
+    dest = tmp_path / "syncnet.pt"
+    sha = _sha256(payload)
+
+    fake_response = MagicMock()
+    fake_response.__enter__.return_value = fake_response
+    fake_response.__exit__.return_value = False
+    fake_response.read.side_effect = [payload, b""]
+
+    with patch("scripts.download_syncnet_checkpoint.urlopen", return_value=fake_response):
+        actual = dl.download(
+            dest,
+            expected_sha256="REPLACE_WITH_ACTUAL_SHA256_AFTER_FIRST_DOWNLOAD",
+            url="https://example.invalid/x",
+            allow_placeholder_sha=True,
+        )
+
+    assert actual == sha
+    assert dest.exists()
+    assert dest.read_bytes() == payload
+
+
+def test_download_refuses_placeholder_without_bootstrap(tmp_path):
+    _install_scripts_on_path()
+    from scripts import download_syncnet_checkpoint as dl
+
+    with pytest.raises(RuntimeError, match="placeholder"):
+        dl.download(
+            tmp_path / "syncnet.pt",
+            expected_sha256="REPLACE_WITH_ACTUAL_SHA256_AFTER_FIRST_DOWNLOAD",
+            url="https://example.invalid/x",
+        )
+
+
 def test_main_exits_zero_when_file_already_present(tmp_path, monkeypatch, capsys):
     _install_scripts_on_path()
     from scripts import download_syncnet_checkpoint as dl
@@ -106,6 +144,17 @@ def test_main_exits_nonzero_on_download_failure(tmp_path, monkeypatch):
     rc = dl.main([])
     assert rc != 0
     assert not dest.exists()
+
+
+def test_default_url_points_to_huggingface_mirror():
+    _install_scripts_on_path()
+    from scripts import download_syncnet_checkpoint as dl
+
+    assert dl.DOWNLOAD_URL == (
+        "https://huggingface.co/camenduru/Wav2Lip/resolve/main/checkpoints/"
+        "lipsync_expert.pth"
+    )
+    assert "Wav2Lip#getting-the-weights" in dl.UPSTREAM_WEIGHTS_PAGE
 
 
 def test_help_message_documents_manual_placement(capsys):
