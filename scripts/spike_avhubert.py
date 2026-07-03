@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from src.common import AVHUBERT_CKPT_PATH, LIPSYNC_PAIRS_MANIFEST, REPORT_VAL_EVAL_DIR
-from src.features.avhubert_backend import _register_avhubert_modules
+from src.features.avhubert_backend import AVHubertBackend
 
 OUT_JSON = REPORT_VAL_EVAL_DIR / "task0_avhubert.json"
 OUT_MD = REPORT_VAL_EVAL_DIR / "task0_avhubert_feasibility.md"
@@ -40,78 +40,10 @@ def collect_environment() -> dict[str, str]:
 
 
 def load_avhubert(checkpoint: Path) -> Any:
-    """Directly load the AV-HuBERT checkpoint via fairseq — no dependency on
-    ``src.features.avhubert_backend`` (that adapter arrives in Task 7). Task 0
-    must be runnable *before* the adapter exists; otherwise its "blocker" would
-    be a false positive from a missing local module.
-
-    Returns a minimal adapter-shaped object with ``checkpoint_sha256``,
-    ``encode_visual``, and ``encode_audio`` methods. ``encode_visual`` tries
-    the two public AV-HuBERT forward heads (``extract_finetune``,
-    ``forward_features``) and raises with a clear message if neither exists;
-    this itself is a Task-0 blocker signal we want to surface, not a bug.
-    """
+    """Load the real AV-HuBERT adapter used by extraction."""
     if not checkpoint.exists():
         raise FileNotFoundError(f"AV-HuBERT checkpoint missing: {checkpoint}")
-
-    import hashlib
-    import torch
-    from fairseq import checkpoint_utils
-
-    h = hashlib.sha256()
-    with checkpoint.open("rb") as f:
-        for block in iter(lambda: f.read(1_048_576), b""):
-            h.update(block)
-    sha = h.hexdigest()
-
-    _register_avhubert_modules()
-    models, _cfg, _task = checkpoint_utils.load_model_ensemble_and_task([str(checkpoint)])
-    model = models[0].eval()
-
-    class _SpikeAdapter:
-        checkpoint_sha256 = sha
-
-        @staticmethod
-        def _visual_forward(x_t):
-            for name in ("extract_finetune", "forward_features", "extract_features"):
-                fn = getattr(model, name, None)
-                if fn is None:
-                    continue
-                out = fn(x_t)
-                if isinstance(out, tuple):
-                    out = out[0]
-                return out
-            raise RuntimeError(
-                "AV-HuBERT model exposes none of extract_finetune / forward_features / extract_features"
-            )
-
-        @staticmethod
-        def _audio_forward(x_t):
-            return _SpikeAdapter._visual_forward(x_t)
-
-        def encode_visual(self, frames):
-            import numpy as np
-            arr = frames.astype("float32") if hasattr(frames, "astype") else frames
-            with torch.no_grad():
-                t = torch.from_numpy(arr) if not isinstance(arr, torch.Tensor) else arr
-                if t.ndim == 3:
-                    t = t.unsqueeze(0).unsqueeze(0)
-                elif t.ndim == 4:
-                    t = t.unsqueeze(0)
-                out = self._visual_forward(t)
-            return out.squeeze(0).cpu().numpy()
-
-        def encode_audio(self, waveform):
-            import numpy as np
-            arr = waveform.astype("float32") if hasattr(waveform, "astype") else waveform
-            with torch.no_grad():
-                t = torch.from_numpy(arr) if not isinstance(arr, torch.Tensor) else arr
-                if t.ndim == 1:
-                    t = t.unsqueeze(0)
-                out = self._audio_forward(t)
-            return out.squeeze(0).cpu().numpy()
-
-    return _SpikeAdapter()
+    return AVHubertBackend.from_checkpoint(checkpoint)
 
 
 def load_sample_inputs(manifest: Path, sample_pair_id: str) -> tuple[str, Any, Any]:
@@ -127,7 +59,7 @@ def load_sample_inputs(manifest: Path, sample_pair_id: str) -> tuple[str, Any, A
                 break
         else:
             raise RuntimeError(f"sample pair {sample_pair_id!r} not found in {manifest}")
-    dummy_video = np.zeros((100, 224, 224, 3), dtype=np.uint8)
+    dummy_video = np.zeros((1, 25, 1, 88, 88), dtype=np.float32)
     dummy_audio = np.zeros(64_000, dtype=np.float32)
     return sample_row["pair_id"], dummy_video, dummy_audio
 

@@ -26,11 +26,10 @@ def test_encode_visual_returns_time_by_768_from_fake_module():
     from src.features import avhubert_backend as ab
 
     class _Fake:
-        def encode_visual_tokens(self, x):
-            return torch.zeros(x.shape[0], 50, 768)
-
-        def encode_audio_tokens(self, x):
-            return torch.zeros(x.shape[0], 100, 768)
+        def extract_finetune(self, source, mask=False):
+            assert source["audio"] is None
+            assert source["video"].shape[1] == 1
+            return torch.zeros(source["video"].shape[0], 50, 768), None
 
     backend = ab.AVHubertBackend(model=_Fake(), checkpoint_sha256="abc")
     frames = np.random.rand(1, 25, 88, 88).astype(np.float32)
@@ -44,11 +43,10 @@ def test_encode_audio_from_waveform_shape():
     from src.features import avhubert_backend as ab
 
     class _Fake:
-        def encode_visual_tokens(self, x):
-            return torch.zeros(x.shape[0], 50, 768)
-
-        def encode_audio_tokens(self, x):
-            return torch.zeros(x.shape[0], 100, 768)
+        def extract_finetune(self, source, mask=False):
+            assert source["video"] is None
+            assert source["audio"].shape[1] == 104
+            return torch.zeros(source["audio"].shape[0], 100, 768), None
 
     backend = ab.AVHubertBackend(model=_Fake(), checkpoint_sha256="abc")
     wave = np.random.rand(64_000).astype(np.float32)
