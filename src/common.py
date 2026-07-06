@@ -34,6 +34,7 @@ VISUAL_SPEECH_MANIFEST_VOICE_SPLIT = DERIVED_DIR / "visual_speech_manifest_voice
 FUSION_SPEECH_MANIFEST_VOICE_SPLIT = DERIVED_DIR / "fusion_speech_manifest_voice_split.csv"
 LIPSYNC_PAIRS_MANIFEST = DERIVED_DIR / "lipsync_pairs_manifest.csv"
 LIPSYNC_PAIRS_PROVENANCE = DERIVED_DIR / "lipsync_pairs_manifest.provenance.json"
+VIDEO_AV_MANIFEST = DERIVED_DIR / "video_av_manifest.csv"
 AUDIO_WAV_CODEC_MATCHED_DIR = DATA_ROOT / "audio_wav_codec_matched"
 
 FEAT_SYNCNET_VISUAL_DIR = DATA_ROOT / "features" / "syncnet_visual"
