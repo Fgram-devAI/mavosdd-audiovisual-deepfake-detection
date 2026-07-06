@@ -61,6 +61,8 @@ Source roles: `data/download_subset.py` (streaming MAVOS-DD filter + hard cap); 
 
 Phases 1–5 complete. MAVOS-DD subset ingested, splits frozen (seed 42, 70/15/15 stratified on `source_folder`), derived manifests built under `data/derived/`, Wav2Vec2/WavLM/HuBERT audio features extracted, MediaPipe lip features extracted, and feature-store dataset loader (`src/data/feature_store.py`) green. The project has moved beyond the original 1,000-video cap into the expanded five-source setup (~4,149 matched-bonafide videos across real/echomimic/memo/liveportrait/sonic), plus TTS/STS/generated-audio rows for the audio-spoof task.
 
+- **`feat/final-fusion-generated-video` shipped** (2026-07-06): logistic-fusion val ROC-AUC 0.9307 (EER 0.1338, F1 0.8376), MLP val ROC-AUC 0.9175, EER-selected threshold 0.3702. Score cache and provenance under `data/derived/final_fusion_scores_{train,val}.csv` + `final_fusion_score_provenance.json` (2904 train / 622 val rows, gitignored). Comparison table at `report/val_eval/final_fusion_comparison.md`. Higgsfield external batch at `report/val_eval/generated_video_batch_scores.csv` — 71/71 scored, 76.06% hit rate at the imported MAVOS-DD val threshold (positive-only stress test — detection rate is a hit rate, not accuracy). Final label semantics: `real → 0`, `echomimic/memo/liveportrait/sonic → 1`; native-audio generated videos stay `1` even when sync-consistency says the audio and lips match. Sync-only ROC-AUC 0.2417 (inverse-informative) validates that sync consistency ≠ deepfake detection.
+
 - **PHASE 5 VAL ROC-AUC (codec-matched + voice-disjoint, honest in-distribution):**
 
   | Modality | wav2vec2 | wavlm | hubert |
@@ -106,6 +108,7 @@ Work is organized into **phases**, not calendar days. Detail lives in `docs/work
 - **Loader contract**: `feature_store.py` is the **only** path raw features enter training. Validate before training: `python -m src.data.feature_store --validate --view {audio|visual|fusion} --backend {…}`. `path_mismatches` is a warning channel; exit code is driven by `missing` + `bad_shape` only.
 - **Manifest sample_id convention**: bonafide rows in every derived manifest use the bare `{source_video_id}` (no `pos__` prefix). This keeps a single `.npy` per `(video_id, backend)` pair instead of duplicating bonafide features under a prefixed key.
 - **Lip-sync consistency (feat/lip-sync-consistency)**: SyncNet-style consistency head (WavLM SSL + BiGRU lip encoder + concat similarity MLP, 460,801 trainable params) trained on deterministic pair manifest (`data/derived/lipsync_pairs_manifest.csv`, negatives-per-positive=2, seed 42). Positive class = `async_inconsistent_pair` (label=1). Val metrics captured at `report/val_eval/lipsync_wavlm_val.txt`: ROC-AUC 0.8409, EER 0.2527, threshold 0.6726, F1 0.826, positive-sync accuracy 0.748. Per-negative-type recall reveals the honest reading: `generated_same_transcript=1.00`, `mismatched_generated=1.00`, `mismatched_original=0.48` — the model perfectly detects any TTS audio (all three providers ≥ 0.998 recall) but is near-chance on mismatched-original audio. It is therefore an audio-spoof detector with lip data along for the ride, not a true fine-grained audio-visual sync head. Test split is intentionally excluded from the pair manifest in this branch; a future final-eval branch regenerates the manifest with `--splits train val test` and adds an `--allow-test` gate.
+- **Final fusion feature set**: `audio_fake_score`, `video_av_fake_score`, `sync_inconsistent_score`. `visual_fake_score` and `source_folder` are excluded from the trainable model — the first because it lives only in a notebook, the second because it would reward dataset-source recognition instead of general deepfake detection.
 
 ## Key config facts (`config/default.yaml`)
 
@@ -113,12 +116,11 @@ Dataset `unibuc-cs/MAVOS-DD`, split `train`, language english; caps real:500 / e
 
 ## TODO / next actions
 
-**Final-stage branches:**
-1. `feat/pretrained-syncnet` — add a stronger/pretrained SyncNet-style mouth-audio consistency path. The lightweight WavLM+BiGRU head is useful but fails mismatched-original audio, so do not oversell it as true sync.
-2. `feat/generated-video-batch-fusion` — ingest the user's new fully AI-generated videos and score them with explicit heads: `audio_fake_score`, `visual_fake_score`, and `av_inconsistent_score`. The final label should be composed from those signals, not by pretending audio fake and visual fake are the same phenomenon.
+- All planned final-fusion work completed. Next: `feat/final-report` for the write-up branch.
 
 ## Handoff notes
 
 - **Done:** ingestion, frozen splits, derived manifests, three codec-matched audio embedding stores, MediaPipe lip features, feature-store dataset loader + validate CLI (PR #6); mel-CNN baseline (PR #7); audio anti-spoof baselines wav2vec2/wavlm/hubert (PR #8); visual + fusion baselines on voice-disjoint splits (PR #9). Lip-sync consistency branch: pair-manifest builder, dataset, model, training + val-only evaluator, WavLM baseline metrics (`feat/lip-sync-consistency`, 379/379 tests green).
 - **Next:** `feat/pretrained-syncnet`, then `feat/generated-video-batch-fusion`.
 - **To resume:** read this file and `README.md`. Always pre-flight feature-store training with `python -m src.data.feature_store --validate --view <view> [--backend <backend>]`. Honor the hard constraints — especially frozen splits, seed 42, single test evaluation, and feature-only core training input. Use `feature_store.py` (not legacy `dataset.py`) for dataset code. Val metric snapshots live at `report/val_eval/all_checkpoints_val_metrics.json`.
+- Final fusion: run `python -m src.data.build_final_fusion_scores` → `python -m src.train_final_fusion` → `python -m src.evaluate_final_fusion` in that order. External generated videos: `python -m scripts.score_generated_video_batch --input-dir <folder> --batch-name <label>`. Fusion checkpoints live at `models/checkpoints/best_final_fusion_{logreg,mlp}.pt`; both stay gitignored.

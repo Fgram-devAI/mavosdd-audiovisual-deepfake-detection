@@ -532,11 +532,30 @@ duration-shortcut contribution.
 video-level AV (recall 0.30–0.68 depending on setup). It should be reported
 as a per-source result, not aggregated away.
 
+### Final fusion (`feat/final-fusion-generated-video`)
+
+Combines four already-trained heads into a single video-level fake probability
+without collapsing their meanings:
+
+| Head | Question |
+|---|---|
+| `audio_fake_score` | Is the speech audio TTS / generated? |
+| `visual_fake_score` | Are sampled frames from a generated source? (notebook-only, see `report/val_eval/final_fusion_visual_frame_unavailable.md`) |
+| `sync_inconsistent_score` | Do the mouth motion and audio disagree? Diagnostic only. |
+| `video_av_fake_score` | Is this a MAVOS-DD generated video source, judged by pretrained AV embeddings? |
+| `final_fusion_score` | Combined video-level fake probability. |
+
+Important: a generated video with its **own** original audio is `final_label=1`
+even if `sync_inconsistent_score` says the audio and lips match. Sync
+consistency answers a different question than deepfake detection.
+
+Val results table: `report/val_eval/final_fusion_comparison.md`.
+Higgsfield external stress-test batch: `report/val_eval/generated_video_batch_summary.md`
+(positive-only; hit rate, not accuracy).
+
 ## Next Branches
 
-1. `feat/generated-video-batch-fusion` — combine `audio_fake_score`,
-   `visual_fake_score`, `av_inconsistent_score`, and `video_av_fake_score`
-   into a single deepfake decision.
+1. `feat/final-report` — write-up branch consolidating all results.
 2. Cross-generator generalization — score MAVOS-DD-trained heads on
    unseen generators (Higgsfield done; more to add) and report
    leave-one-generator-out.
