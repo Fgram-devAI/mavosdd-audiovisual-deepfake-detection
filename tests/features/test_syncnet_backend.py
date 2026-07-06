@@ -44,7 +44,7 @@ def test_encode_visual_from_synthetic_module_returns_expected_shape(monkeypatch)
     fake = _FakeSyncNet()
     backend = sb.SyncNetBackend(model=fake, checkpoint_sha256="abc")
 
-    stacks = np.random.rand(4, 5, 3, 96, 96).astype(np.float32)
+    stacks = np.random.rand(4, 5, 3, 48, 96).astype(np.float32)
     out = backend.encode_visual(stacks)
     assert out.shape == (4, 512)
     assert out.dtype == np.float32

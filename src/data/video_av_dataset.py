@@ -15,6 +15,34 @@ from src.data.lipsync_pretrained_dataset import (
 )
 
 
+def fixed_window(
+    windows: np.ndarray,
+    *,
+    window_count: int | None,
+    policy: str = "center",
+) -> np.ndarray:
+    """Crop or right-pad a 2D window sequence to a fixed temporal length."""
+    if window_count is None:
+        return windows
+    if window_count <= 0:
+        raise ValueError("window_count must be positive")
+    if windows.ndim != 2:
+        raise ValueError(f"expected 2D window array, got {windows.shape}")
+    n, dim = windows.shape
+    if n == window_count:
+        return windows
+    if n > window_count:
+        if policy == "first":
+            start = 0
+        elif policy == "center":
+            start = (n - window_count) // 2
+        else:
+            raise ValueError(f"unknown window policy: {policy!r}")
+        return windows[start:start + window_count]
+    pad = np.zeros((window_count - n, dim), dtype=windows.dtype)
+    return np.concatenate([windows, pad], axis=0)
+
+
 class VideoAVDataset(Dataset):
     def __init__(
         self,
@@ -25,12 +53,16 @@ class VideoAVDataset(Dataset):
         audio_dir: Path,
         failures_csv: Path | None = None,
         max_offset: int = MAX_OFFSET,
+        window_count: int | None = None,
+        window_policy: str = "center",
     ) -> None:
         if split == "test":
             raise ValueError("test split is locked; refuse to open test rows")
         self.visual_dir = visual_dir
         self.audio_dir = audio_dir
         self.max_offset = max_offset
+        self.window_count = window_count
+        self.window_policy = window_policy
         self.excluded_sample_ids: set[str] = set()
 
         failed_sample_ids: set[str] = set()
@@ -78,6 +110,12 @@ class VideoAVDataset(Dataset):
         aid = row["audio_sample_id"]
         v_windows = self._load_windows(self.visual_dir / f"{vid}.npy")
         a_windows = self._load_windows(self.audio_dir / f"{aid}.npy")
+        v_windows = fixed_window(
+            v_windows, window_count=self.window_count, policy=self.window_policy,
+        )
+        a_windows = fixed_window(
+            a_windows, window_count=self.window_count, policy=self.window_policy,
+        )
         sync_features = compute_sync_features(v_windows, a_windows, max_offset=self.max_offset)
         label = torch.tensor(float(row["video_label_binary"]), dtype=torch.float32)
         return {

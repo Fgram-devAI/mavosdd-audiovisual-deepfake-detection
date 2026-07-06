@@ -110,7 +110,7 @@ def test_main_skips_existing_and_writes_new(tmp_path, monkeypatch):
 
     with patch("src.features.extract_syncnet_embeddings.SyncNetBackend") as SB, \
          patch("src.features.extract_syncnet_embeddings.extract_mouth_crops",
-               return_value=np.zeros((2, 5, 3, 96, 96), dtype=np.float16)), \
+               return_value=np.zeros((2, 5, 3, 48, 96), dtype=np.float16)), \
          patch("src.features.extract_syncnet_embeddings._compute_mel",
                return_value=np.zeros((2, 1, 80, 16), dtype=np.float32)):
         SB.from_checkpoint.return_value = fake_adapter

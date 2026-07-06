@@ -38,6 +38,8 @@ class VideoAVTrainConfig:
     hidden: int = 128
     device: str = "cpu"
     seed: int = 42
+    window_count: int | None = None
+    window_policy: str = "center"
 
 
 def train(config: VideoAVTrainConfig) -> None:
@@ -48,6 +50,8 @@ def train(config: VideoAVTrainConfig) -> None:
         visual_dir=config.visual_dir,
         audio_dir=config.audio_dir,
         failures_csv=config.failures_csv,
+        window_count=config.window_count,
+        window_policy=config.window_policy,
     )
     val_ds = VideoAVDataset(
         manifest=config.manifest,
@@ -55,6 +59,8 @@ def train(config: VideoAVTrainConfig) -> None:
         visual_dir=config.visual_dir,
         audio_dir=config.audio_dir,
         failures_csv=config.failures_csv,
+        window_count=config.window_count,
+        window_policy=config.window_policy,
     )
     if len(train_ds) == 0 or len(val_ds) == 0:
         raise RuntimeError(
@@ -174,6 +180,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--hidden", type=int, default=128)
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--window-count", type=int, default=None,
+                        help="crop/pad each visual/audio embedding sequence to this many windows")
+    parser.add_argument("--window-policy", choices=("center", "first"), default="center")
     args = parser.parse_args(argv)
 
     visual_dir, audio_dir, failures_csv, embed_dim = resolve_backend(args.backend)
@@ -197,6 +206,8 @@ def main(argv: list[str] | None = None) -> int:
         hidden=args.hidden,
         device=args.device,
         seed=args.seed,
+        window_count=args.window_count,
+        window_policy=args.window_policy,
     )
     train(cfg)
     return 0

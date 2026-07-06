@@ -28,6 +28,8 @@ def _video_label_for_source(source_folder: str) -> tuple[str, str]:
 
 
 def build_manifest(*, source: Path, out: Path, splits: set[str]) -> int:
+    if "test" in splits:
+        raise ValueError("test split is locked; refuse to build video AV test rows")
     with source.open(newline="") as f:
         reader = csv.DictReader(f)
         rows = []
@@ -67,7 +69,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--splits", nargs="+", default=["train", "val"])
     args = parser.parse_args(argv)
 
-    n = build_manifest(source=args.source, out=args.out, splits=set(args.splits))
+    try:
+        n = build_manifest(source=args.source, out=args.out, splits=set(args.splits))
+    except ValueError as exc:
+        print(str(exc))
+        return 2
     print(f"wrote {n} rows to {args.out}")
     return 0
 

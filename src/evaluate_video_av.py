@@ -77,6 +77,8 @@ def evaluate(
     allow_partial: bool,
     out: Path,
     device: str,
+    window_count: int | None,
+    window_policy: str,
 ) -> int:
     if split == "test":
         raise ValueError("test split is locked; refuse to evaluate on test")
@@ -89,6 +91,8 @@ def evaluate(
         visual_dir=visual_dir,
         audio_dir=audio_dir,
         failures_csv=fcsv,
+        window_count=window_count,
+        window_policy=window_policy,
     )
 
     with manifest.open(newline="") as f:
@@ -173,6 +177,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--allow-partial", action="store_true")
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--device", default="cpu")
+    parser.add_argument("--window-count", type=int, default=None,
+                        help="crop/pad each visual/audio embedding sequence to this many windows")
+    parser.add_argument("--window-policy", choices=("center", "first"), default="center")
     args = parser.parse_args(argv)
     return evaluate(
         checkpoint=args.checkpoint,
@@ -182,6 +189,8 @@ def main(argv: list[str] | None = None) -> int:
         allow_partial=args.allow_partial,
         out=args.out,
         device=args.device,
+        window_count=args.window_count,
+        window_policy=args.window_policy,
     )
 
 
