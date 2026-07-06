@@ -20,4 +20,14 @@ Source: `report/visual_frame_baseline/visual_frame_baseline_efficientnet_b0_val.
 To include `visual_fake_score` in the fusion input, first extract the notebook
 into a stable script (e.g. `src/features/extract_visual_frame_score.py` +
 `scripts/score_generated_video_batch.py --visual-frame-ckpt ...`) and re-run
-`build_final_fusion_scores`.
+`build_final_fusion_scores`. This is tracked as follow-up branch
+**`feat/visual-frame-score-cli`**.
+
+## Framing note
+
+Call this baseline `visual_frame_baseline` (or, more precisely,
+`channel-confounded visual-frame baseline`). Do **not** call it the
+"visual fake detector": the disjoint per-source-folder codec / resolution /
+FPS signatures mean the reported ROC-AUC 0.9853 is not evidence of semantic
+fake-face generalization, and the number should not be quoted alongside the
+final-fusion metrics as if it were a comparable head.
