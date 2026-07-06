@@ -5,7 +5,7 @@
 - Input pair_id: `pos__-1_SwSYMu2A_12_1`
 - Visual output shape: `[25, 768]`
 - Audio output shape: `[100, 768]`
-- Runtime (s): `2.19`
+- Runtime (s): `2.141`
 
 ## Environment
 

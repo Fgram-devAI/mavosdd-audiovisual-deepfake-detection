@@ -83,7 +83,9 @@ class AVHubertBackend:
             {"audio": None, "video": tensor},
             mask=False,
         )
-        return tokens.squeeze(0).detach().cpu().numpy().astype(np.float32)
+        if tokens.ndim == 3:
+            tokens = tokens.reshape(-1, tokens.shape[-1])
+        return tokens.detach().cpu().numpy().astype(np.float32)
 
     @torch.no_grad()
     def encode_audio(self, waveform: np.ndarray) -> np.ndarray:
