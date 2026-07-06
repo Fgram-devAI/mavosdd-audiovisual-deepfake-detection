@@ -37,6 +37,14 @@ Implementation details and the full working memory live in
 [`CLAUDE.md`](CLAUDE.md). This README keeps only the public repro commands,
 headline metrics, and current roadmap.
 
+## Final Report
+
+The final write-up is available at
+[`report/Multimodal_Deepfake_Detection_using_Audio_and_Visual_Cues_FINAL.pdf`](report/Multimodal_Deepfake_Detection_using_Audio_and_Visual_Cues_FINAL.pdf).
+It summarizes the dataset construction, acoustic/visual confound audits,
+audio baselines, sync diagnostics, corrected video-level AV detection, final
+score-level fusion, and the Higgsfield positive-only stress test.
+
 ## Roadmap Snapshot
 
 ```mermaid
