@@ -10,10 +10,17 @@ four related tasks separate instead of pretending they are one:
 | Audio-visual sync (diagnostic) | Does the mouth motion match the audio? | Async / inconsistent pair |
 | Video-level AV fake (corrected final) | Is this a fake video, given its native audio? | EchoMimic / MEMO / LivePortrait / Sonic with own audio |
 
-The final detector should combine explicit head scores as separate signals:
+The final detector combines explicit head scores as separate signals. The
+shipped fusion in this branch uses three head scores; adding the
+visual-frame score is deferred until a stable CLI/checkpoint path exists
+(follow-up: `feat/visual-frame-score-cli`).
 
 ```text
-deepfake_score = fusion(audio_fake_score, visual_fake_score, av_inconsistent_score, video_av_fake_score)
+# Shipped in feat/final-fusion-generated-video (three heads).
+deepfake_score = fusion(audio_fake_score, video_av_fake_score, sync_inconsistent_score)
+
+# Future — pending visual-frame CLI extraction.
+deepfake_score = fusion(audio_fake_score, video_av_fake_score, sync_inconsistent_score, visual_fake_score)
 ```
 
 **Why the video-level AV head is separate from AV sync.** The AV-sync head
@@ -29,6 +36,14 @@ audio is the video's native track, so it does not inherit the AV-sync task's
 Implementation details and the full working memory live in
 [`CLAUDE.md`](CLAUDE.md). This README keeps only the public repro commands,
 headline metrics, and current roadmap.
+
+## Final Report
+
+The final write-up is available at
+[`report/Multimodal_Deepfake_Detection_using_Audio_and_Visual_Cues_FINAL.pdf`](report/Multimodal_Deepfake_Detection_using_Audio_and_Visual_Cues_FINAL.pdf).
+It summarizes the dataset construction, acoustic/visual confound audits,
+audio baselines, sync diagnostics, corrected video-level AV detection, final
+score-level fusion, and the Higgsfield positive-only stress test.
 
 ## Roadmap Snapshot
 
@@ -46,7 +61,7 @@ flowchart TD
     I --> V["Video-level AV fake head<br/>SyncNet / AV-HuBERT native own-audio"]
     H --> V
     V --> W["Higgsfield external stress test<br/>cross-generator hit-rate"]
-    V --> K["Final: generated-video batch fusion<br/>audio + visual + sync + video-AV"]
+    V --> K["Final: generated-video batch fusion<br/>audio + video-AV + sync<br/>(visual-frame excluded — notebook-only)"]
 ```
 
 ## Quick Start
@@ -506,9 +521,12 @@ signatures. The number is a useful baseline, not proof of semantic fake-face
 generalization.
 
 **Concat fusion ≈ audio-only.** The old late-fusion model inherits the dominant
-audio score. Final fusion should combine explicit head scores:
-`audio_fake_score`, `visual_fake_score`, `av_inconsistent_score`, and
-`video_av_fake_score`.
+audio score. Final fusion combines explicit head scores. The shipped
+three-head fusion uses `audio_fake_score`, `video_av_fake_score`, and
+`sync_inconsistent_score`; `visual_fake_score` is defined in the score CSV
+schema but stays blank in this branch because the EfficientNet-B0 sampled-frame
+baseline is notebook-only. Extracting it into a stable CLI is tracked as
+follow-up `feat/visual-frame-score-cli`.
 
 **Sync-consistency is diagnostic, not final.** The pretrained SyncNet and
 AV-HuBERT sync-consistency heads label a video paired with its own audio as
@@ -532,11 +550,41 @@ duration-shortcut contribution.
 video-level AV (recall 0.30–0.68 depending on setup). It should be reported
 as a per-source result, not aggregated away.
 
+### Final fusion (`feat/final-fusion-generated-video`)
+
+Combines **three** already-trained heads into a single video-level fake
+probability without collapsing their meanings. A fourth head
+(`visual_fake_score`) is present in the score-CSV schema but is not used —
+the EfficientNet-B0 sampled-frame baseline lives only in
+`notebooks/03_visual_frame_baseline_extended_data.ipynb` and has no stable
+CLI or checkpoint API. Adding it to fusion is tracked as follow-up
+`feat/visual-frame-score-cli`.
+
+| Head | Question | In shipped fusion? |
+|---|---|---|
+| `audio_fake_score` | Is the speech audio TTS / generated? | ✅ |
+| `video_av_fake_score` | Is this a MAVOS-DD generated video source, judged by pretrained AV embeddings? | ✅ |
+| `sync_inconsistent_score` | Do the mouth motion and audio disagree? Diagnostic AV-consistency signal — not itself a fake detector. | ✅ |
+| `visual_fake_score` | Are sampled frames from a generated source? Notebook-only EfficientNet-B0 baseline; likely channel-confounded (disjoint resolution / FPS / codec across source folders). See `report/val_eval/final_fusion_visual_frame_unavailable.md`. | ❌ deferred |
+| `final_fusion_score` | Combined video-level fake probability from the three trained heads. | — |
+
+Important: a generated video with its **own** original audio is `final_label=1`
+even if `sync_inconsistent_score` says the audio and lips match. Sync
+consistency answers a different question than deepfake detection — SyncNet
+still correctly detects constructed audio-visual mismatches (see the
+`feat/lip-sync-consistency` per-negative-type metrics), but a low sync
+inconsistency score alone is **not** a real-video signal because
+MAVOS-DD generated videos come with native, internally-synchronized audio.
+The `sync_only` row's val ROC-AUC 0.2417 (below chance) makes this concrete:
+inconsistency-as-generated-video predictor is worse than chance on this data.
+
+Val results table: `report/val_eval/final_fusion_comparison.md`.
+Higgsfield external stress-test batch: `report/val_eval/generated_video_batch_summary.md`
+(positive-only; hit rate, not accuracy).
+
 ## Next Branches
 
-1. `feat/generated-video-batch-fusion` — combine `audio_fake_score`,
-   `visual_fake_score`, `av_inconsistent_score`, and `video_av_fake_score`
-   into a single deepfake decision.
+1. `feat/final-report` — write-up branch consolidating all results.
 2. Cross-generator generalization — score MAVOS-DD-trained heads on
    unseen generators (Higgsfield done; more to add) and report
    leave-one-generator-out.

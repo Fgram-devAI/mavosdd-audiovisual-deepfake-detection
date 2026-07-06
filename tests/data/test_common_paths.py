@@ -86,3 +86,18 @@ def test_extraction_failure_paths_are_backend_specific():
 def test_report_val_eval_dir():
     from src import common
     assert common.REPORT_VAL_EVAL_DIR == Path("report") / "val_eval"
+
+
+def test_final_fusion_paths_exposed():
+    from src import common
+    assert common.FINAL_FUSION_SCORES_TRAIN == common.DERIVED_DIR / "final_fusion_scores_train.csv"
+    assert common.FINAL_FUSION_SCORES_VAL == common.DERIVED_DIR / "final_fusion_scores_val.csv"
+    assert common.FINAL_FUSION_SCORE_PROVENANCE == common.DERIVED_DIR / "final_fusion_score_provenance.json"
+    assert common.CKPT_FINAL_FUSION_LOGREG == common.CKPT_DIR / "best_final_fusion_logreg.pt"
+    assert common.CKPT_FINAL_FUSION_MLP == common.CKPT_DIR / "best_final_fusion_mlp.pt"
+    assert common.FINAL_FUSION_VAL_REPORT == common.REPORT_VAL_EVAL_DIR / "final_fusion_val.txt"
+    assert common.FINAL_FUSION_COMPARISON_REPORT == common.REPORT_VAL_EVAL_DIR / "final_fusion_comparison.md"
+    assert common.FINAL_FUSION_VISUAL_UNAVAILABLE_REPORT == common.REPORT_VAL_EVAL_DIR / "final_fusion_visual_frame_unavailable.md"
+    assert common.GENERATED_VIDEO_BATCH_SCORES == common.REPORT_VAL_EVAL_DIR / "generated_video_batch_scores.csv"
+    assert common.GENERATED_VIDEO_BATCH_SUMMARY == common.REPORT_VAL_EVAL_DIR / "generated_video_batch_summary.md"
+    assert common.HIGGSFIELD_GEN_VIDEOS_DIR == common.DATA_ROOT / "higgsfield_gen_videos"

@@ -54,6 +54,18 @@ AVHUBERT_FAILURES_CSV = DATA_ROOT / "features" / "avhubert_extraction_failures.c
 REPORT_DIR = Path("report")
 REPORT_VAL_EVAL_DIR = REPORT_DIR / "val_eval"
 
+FINAL_FUSION_SCORES_TRAIN = DERIVED_DIR / "final_fusion_scores_train.csv"
+FINAL_FUSION_SCORES_VAL = DERIVED_DIR / "final_fusion_scores_val.csv"
+FINAL_FUSION_SCORE_PROVENANCE = DERIVED_DIR / "final_fusion_score_provenance.json"
+CKPT_FINAL_FUSION_LOGREG = CKPT_DIR / "best_final_fusion_logreg.pt"
+CKPT_FINAL_FUSION_MLP = CKPT_DIR / "best_final_fusion_mlp.pt"
+FINAL_FUSION_VAL_REPORT = REPORT_VAL_EVAL_DIR / "final_fusion_val.txt"
+FINAL_FUSION_COMPARISON_REPORT = REPORT_VAL_EVAL_DIR / "final_fusion_comparison.md"
+FINAL_FUSION_VISUAL_UNAVAILABLE_REPORT = REPORT_VAL_EVAL_DIR / "final_fusion_visual_frame_unavailable.md"
+GENERATED_VIDEO_BATCH_SCORES = REPORT_VAL_EVAL_DIR / "generated_video_batch_scores.csv"
+GENERATED_VIDEO_BATCH_SUMMARY = REPORT_VAL_EVAL_DIR / "generated_video_batch_summary.md"
+HIGGSFIELD_GEN_VIDEOS_DIR = DATA_ROOT / "higgsfield_gen_videos"
+
 EXTRACTION_FAILURE_FIELDS = (
     "sample_id",
     "stage",
