@@ -34,7 +34,33 @@ VISUAL_SPEECH_MANIFEST_VOICE_SPLIT = DERIVED_DIR / "visual_speech_manifest_voice
 FUSION_SPEECH_MANIFEST_VOICE_SPLIT = DERIVED_DIR / "fusion_speech_manifest_voice_split.csv"
 LIPSYNC_PAIRS_MANIFEST = DERIVED_DIR / "lipsync_pairs_manifest.csv"
 LIPSYNC_PAIRS_PROVENANCE = DERIVED_DIR / "lipsync_pairs_manifest.provenance.json"
+VIDEO_AV_MANIFEST = DERIVED_DIR / "video_av_manifest.csv"
 AUDIO_WAV_CODEC_MATCHED_DIR = DATA_ROOT / "audio_wav_codec_matched"
+
+FEAT_SYNCNET_VISUAL_DIR = DATA_ROOT / "features" / "syncnet_visual"
+FEAT_SYNCNET_AUDIO_DIR = DATA_ROOT / "features" / "syncnet_audio"
+FEAT_AVHUBERT_VISUAL_DIR = DATA_ROOT / "features" / "avhubert_visual"
+FEAT_AVHUBERT_AUDIO_DIR = DATA_ROOT / "features" / "avhubert_audio"
+
+CKPT_DIR = Path("models/checkpoints")
+CKPT_SYNCNET_DIR = CKPT_DIR / "syncnet_pretrained"
+CKPT_AVHUBERT_DIR = CKPT_DIR / "avhubert_pretrained"
+SYNCNET_CKPT_PATH = CKPT_SYNCNET_DIR / "syncnet.pt"
+AVHUBERT_CKPT_PATH = CKPT_AVHUBERT_DIR / "avhubert_base.pt"
+
+SYNCNET_FAILURES_CSV = DATA_ROOT / "features" / "syncnet_extraction_failures.csv"
+AVHUBERT_FAILURES_CSV = DATA_ROOT / "features" / "avhubert_extraction_failures.csv"
+
+REPORT_DIR = Path("report")
+REPORT_VAL_EVAL_DIR = REPORT_DIR / "val_eval"
+
+EXTRACTION_FAILURE_FIELDS = (
+    "sample_id",
+    "stage",
+    "error_type",
+    "error_message",
+    "timestamp",
+)
 
 CAPS = {
     "real": 2500,

@@ -1,24 +1,30 @@
 # Audiovisual Deepfake Detection
 
 Multimodal deepfake detection on a capped MAVOS-DD subset. The project keeps
-three related labels separate instead of pretending they are one thing:
+four related tasks separate instead of pretending they are one:
 
-| Head | Question | Positive class |
+| Task | Question | Positive class |
 |---|---|---|
 | Audio anti-spoof | Is the speech audio generated? | ElevenLabs / Google / OpenAI / other TTS |
 | Visual fake-video | Is the face/video generated? | EchoMimic / MEMO / LivePortrait / Sonic |
-| Audio-visual sync | Does the mouth motion match the audio? | Async / inconsistent pair |
+| Audio-visual sync (diagnostic) | Does the mouth motion match the audio? | Async / inconsistent pair |
+| Video-level AV fake (corrected final) | Is this a fake video, given its native audio? | EchoMimic / MEMO / LivePortrait / Sonic with own audio |
 
-The final detector should combine these as separate signals:
+The final detector should combine explicit head scores as separate signals:
 
 ```text
-deepfake_score = fusion(audio_fake_score, visual_fake_score, av_inconsistent_score)
+deepfake_score = fusion(audio_fake_score, visual_fake_score, av_inconsistent_score, video_av_fake_score)
 ```
 
-That distinction matters: EchoMimic/MEMO/LivePortrait/Sonic clips usually carry
-original real audio, so the audio head should not call them fake. The visual
-head catches generated video, and the sync head catches mismatched audio-mouth
-pairs.
+**Why the video-level AV head is separate from AV sync.** The AV-sync head
+learns to say "matched" when a video is paired with its own audio and
+"mismatched" when audio is swapped in. That is fine as a diagnostic, but it is
+the wrong final objective: EchoMimic/MEMO/Sonic/LivePortrait clips with their
+*own* generated video and *own* original audio are still fake videos, and any
+final detector must flag them as positive. The video-level AV head labels
+`real=0` and `echomimic/memo/sonic/liveportrait=1` regardless of whether the
+audio is the video's native track, so it does not inherit the AV-sync task's
+"same audio ⇒ negative" bias.
 
 Implementation details and the full working memory live in
 [`CLAUDE.md`](CLAUDE.md). This README keeps only the public repro commands,
@@ -34,11 +40,13 @@ flowchart TD
     C --> E[Audio anti-spoof baselines]
     D --> F[Legacy lip-only baseline]
     C --> G["Audio channel audits<br/>codec match + normalization"]
-    G --> H[SyncNet-style consistency head]
+    G --> H["Sync-consistency diagnostics<br/>WavLM/SyncNet/AV-HuBERT"]
     C --> I["Visual frame baseline<br/>EfficientNetB0 notebook"]
-    I --> J[Next: pretrained SyncNet / stronger AV sync]
-    H --> J
-    J --> K["Final: generated-video batch fusion<br/>score audio + visual + sync"]
+    D --> H
+    I --> V["Video-level AV fake head<br/>SyncNet / AV-HuBERT native own-audio"]
+    H --> V
+    V --> W["Higgsfield external stress test<br/>cross-generator hit-rate"]
+    V --> K["Final: generated-video batch fusion<br/>audio + visual + sync + video-AV"]
 ```
 
 ## Quick Start
@@ -249,27 +257,46 @@ notebook likewise stayed near saturated: ROC-AUC **0.99994**. The takeaway is
 that generator fingerprints survive simple channel normalization. See
 [`report/audio_channel_normalization_audit.md`](report/audio_channel_normalization_audit.md).
 
-### Audio-Visual Sync
+### Audio-Visual Sync (Diagnostic Only)
 
-The current sync branch trains a lightweight SyncNet-style consistency head
-over WavLM audio embeddings plus MediaPipe lip landmarks. Positive class is
-`async_inconsistent_pair`.
+**Framing.** This head answers "does the audio match the mouth?" It is *not*
+a video-level fake-video detector — a fake video played with its own audio is
+correctly labelled `matched` by this head, because AV consistency is preserved.
+Sync-consistency metrics are auxiliary diagnostics; they must not be reported
+as final deepfake detection.
 
-| Model | Val ROC-AUC | EER | F1 | Honest read |
-|---|---:|---:|---:|---|
-| WavLM + BiGRU consistency head | 0.8409 | 0.2527 | 0.8261 | Strong on generated-audio negatives, weak on real-audio mismatches |
+Three backends were trained against the same deterministic pair manifest
+(seed 42, `positive_class=async_inconsistent_pair`, test split locked out):
 
-Breakdown:
+| Backend | Val ROC-AUC | EER | F1 | sync_accuracy | Metrics |
+|---|---:|---:|---:|---:|---|
+| WavLM + BiGRU (baseline)                       | 0.8409 | 0.2527 | 0.8261 | 0.7476 | [`lipsync_wavlm_val.txt`](report/val_eval/lipsync_wavlm_val.txt) |
+| SyncNet (pretrained Wav2Lip expert)            | 0.9100 | 0.1819 | 0.8786 | 0.8177 | [`syncnet_val.txt`](report/val_eval/syncnet_val.txt) |
+| AV-HuBERT base (default lr, dropout 0.3)       | 0.7302 | 0.3370 | 0.7597 | 0.6629 | [`avhubert_val.txt`](report/val_eval/avhubert_val.txt) |
+| AV-HuBERT base (lr 3e-4, dropout 0.2)          | 0.7388 | 0.3356 | 0.7607 | 0.6645 | [`avhubert_lr3e4_d02_val.txt`](report/val_eval/avhubert_lr3e4_d02_val.txt) |
 
-| Negative type | Recall |
-|---|---:|
-| generated_same_transcript | 1.0000 |
-| mismatched_generated | 0.9992 |
-| mismatched_original | 0.4831 |
+Recall breakdown on the hard `mismatched_original` slice (real audio, wrong
+speaker) — this is where an *audio-only* shortcut fails:
 
-So this is not yet a true pretrained SyncNet result. It mostly catches the
-synthetic-audio side of the async task. Full metrics:
-[`report/val_eval/lipsync_wavlm_val.txt`](report/val_eval/lipsync_wavlm_val.txt).
+| Backend | generated_same_transcript | mismatched_generated | mismatched_original |
+|---|---:|---:|---:|
+| WavLM + BiGRU        | 1.0000 | 0.9992 | 0.4831 |
+| SyncNet              | 0.9828 | 0.9702 | **0.6580** |
+| AV-HuBERT default    | 0.9138 | 0.9194 | 0.3932 |
+| AV-HuBERT lr3e4 d0.2 | 0.9310 | 0.9355 | 0.3786 |
+
+**Honest read.** SyncNet is the only backend that clears the WavLM baseline on
+the `mismatched_original` diagnostic (0.658 vs 0.483) — it uses lip-region
+pixels directly and does not collapse to audio spoof detection. AV-HuBERT in
+this training setup is weaker than the WavLM baseline on the same slice and is
+therefore *not* recommended as the sync-consistency backend on this data. Both
+AV-HuBERT and WavLM/BiGRU rely more on the audio side, so they saturate on
+generated-audio negatives while under-performing when the negative is a real
+voice sync-mismatched to the lips.
+
+Val evaluations are `partial_evaluation=true` — 19 of 3168 pair rows were
+excluded (10 `missing_visual`, 9 `extraction_failure`) and the metric files
+carry an explicit warning header.
 
 ### Visual Fake-Video Baseline
 
@@ -302,6 +329,157 @@ video signatures across sampled source folders, so the CNN can exploit
 resolution/FPS/encoder artifacts. The notebook reports this explicitly. Summary:
 [`report/visual_frame_baseline/visual_frame_baseline_efficientnet_b0_val.json`](report/visual_frame_baseline/visual_frame_baseline_efficientnet_b0_val.json).
 
+### Video-Level AV Fake Detection (Corrected Final Head)
+
+**Framing.** This head asks the actual deepfake question: given the video's
+own audio track, is the video real or generated? Labels are
+`real=0`, `echomimic/memo/sonic/liveportrait=1`, drawn from
+`data/derived/video_av_manifest.csv` (native own-audio rows only, train+val,
+test split refused at manifest-build time). The head consumes cached SyncNet or
+AV-HuBERT visual/audio embeddings — no raw video enters the training loop —
+and combines pooled visual, pooled audio, and per-window sync features into a
+small MLP under 500K params.
+
+**Uncontrolled val results** (all windows per clip, `positive_class=fake_video`):
+
+| Backend  | Val ROC-AUC | EER    | F1     | Real specificity | echomimic | memo   | sonic  | liveportrait | Metrics |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---|
+| SyncNet   | 0.8703 | 0.2018 | 0.7592 | 0.7989 | 0.9111 | 0.8500 | 1.0000 | 0.2979 | [`video_av_syncnet_val.txt`](report/val_eval/video_av_syncnet_val.txt) |
+| AV-HuBERT | **0.9642** | **0.0834** | **0.8972** | 0.9142 | 0.9778 | 0.9833 | 0.9600 | 0.6809 | [`video_av_avhubert_val.txt`](report/val_eval/video_av_avhubert_val.txt) |
+
+**Temporal-length cue risk.** MAVOS-DD source folders have systematically
+different clip durations (e.g. LivePortrait clips are visibly longer than real
+clips). Because per-clip pooling and offset scans operate over a
+variable number of windows, the head can pick up "video is longer than usual"
+as a proxy for "generated". A fixed-window ablation (`--window-count 25
+--window-policy center`) forces every clip to contribute exactly the middle
+25 windows regardless of native duration:
+
+| Backend  | Val ROC-AUC | EER    | F1     | Real specificity | echomimic | memo   | sonic  | liveportrait | Metrics |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---|
+| SyncNet fixed25   | 0.8468 | 0.2233 | 0.7346 | 0.7802 | 0.9000 | 0.8167 | 1.0000 | 0.2340 | [`video_av_syncnet_fixed25_val.txt`](report/val_eval/video_av_syncnet_fixed25_val.txt) |
+| AV-HuBERT fixed25 | 0.9317 | 0.1372 | 0.8337 | 0.8633 | 0.9000 | 0.9333 | 0.9600 | 0.5957 | [`video_av_avhubert_fixed25_val.txt`](report/val_eval/video_av_avhubert_fixed25_val.txt) |
+
+Fixed-window drops ROC-AUC by about 3 points on both backends, which is the
+expected cost of throwing away duration signal. The per-source pattern is
+stable — AV-HuBERT beats SyncNet, LivePortrait remains the hardest source, and
+Sonic remains the easiest. Reading the two together: AV-HuBERT at ~0.93 fixed-window
+is a real signal, not a duration-detector, but is *not* proof of generalization
+beyond MAVOS-DD.
+
+Val evaluations are `partial_evaluation=true` — 2 of 622 rows excluded
+(both `missing_visual`).
+
+### Higgsfield External Stress Test
+
+71 fully AI-generated Higgsfield clips (own audio) were scored with the four
+trained video-level AV heads at each checkpoint's chosen threshold. This is a
+zero-training external cross-generator stress test, not a benchmark.
+
+| Head              | Threshold | Flagged fake | Detection rate | Mean score | Median score | Scores CSV |
+|---|---:|---:|---:|---:|---:|---|
+| SyncNet uncontrolled     | 0.2712 | 48 / 71 | 67.6% | 0.544 | 0.622 | [`higgsfield_video_av_syncnet_scores.csv`](report/val_eval/higgsfield_video_av_syncnet_scores.csv) |
+| AV-HuBERT uncontrolled   | 0.2228 | 59 / 71 | **83.1%** | 0.594 | 0.572 | [`higgsfield_video_av_avhubert_scores.csv`](report/val_eval/higgsfield_video_av_avhubert_scores.csv) |
+| SyncNet fixed25          | 0.3585 | 43 / 71 | 60.6% | 0.452 | 0.436 | [`higgsfield_video_av_syncnet_fixed25_scores.csv`](report/val_eval/higgsfield_video_av_syncnet_fixed25_scores.csv) |
+| AV-HuBERT fixed25        | 0.4544 | 55 / 71 | **77.5%** | 0.694 | 0.784 | [`higgsfield_video_av_avhubert_fixed25_scores.csv`](report/val_eval/higgsfield_video_av_avhubert_fixed25_scores.csv) |
+
+Both heads drop under fixed-window scoring (SyncNet 67.6% → 60.6%;
+AV-HuBERT 83.1% → 77.5%), which means duration contributes some signal but does
+not fully explain the external Higgsfield hits. These are cross-generator
+stress-test hit rates, not calibrated detection accuracies — Higgsfield videos
+have no `real` counterpart in this pool, so specificity cannot be measured here.
+
+## Video-Level AV Repro Commands
+
+```bash
+# 1. Build the video-level AV manifest (native own-audio rows only,
+#    test split refused at build time; real=0, fake_source=1)
+python -m src.data.build_video_av_manifest \
+  --source data/derived/visual_speech_manifest_voice_split.csv \
+  --out    data/derived/video_av_manifest.csv \
+  --splits train val
+
+# 2. Extract SyncNet and AV-HuBERT embeddings once (frozen backbones)
+python -m src.features.extract_syncnet_embeddings  --splits train val
+python -m src.features.extract_avhubert_embeddings --splits train val
+
+# 3. Train the video-level AV heads (uncontrolled: all windows per clip)
+python -m src.train_video_av --backend syncnet  \
+  --run-name video_av_syncnet  --out models/checkpoints/video_av_syncnet.pt
+python -m src.train_video_av --backend avhubert \
+  --run-name video_av_avhubert --out models/checkpoints/video_av_avhubert.pt
+
+# 4. Evaluate on val (test refused; use --allow-partial to accept the
+#    2/622 excluded rows for missing visual embeddings)
+python -m src.evaluate_video_av --backend syncnet  \
+  --checkpoint models/checkpoints/video_av_syncnet.pt  \
+  --out report/val_eval/video_av_syncnet_val.txt  --allow-partial
+python -m src.evaluate_video_av --backend avhubert \
+  --checkpoint models/checkpoints/video_av_avhubert.pt \
+  --out report/val_eval/video_av_avhubert_val.txt --allow-partial
+
+# 5. Fixed-window ablation (mitigates the duration cue: exactly 25
+#    center windows per clip during both training and evaluation)
+python -m src.train_video_av --backend syncnet \
+  --run-name video_av_syncnet_fixed25 \
+  --out models/checkpoints/video_av_syncnet_fixed25.pt \
+  --window-count 25 --window-policy center
+python -m src.train_video_av --backend avhubert \
+  --run-name video_av_avhubert_fixed25 \
+  --out models/checkpoints/video_av_avhubert_fixed25.pt \
+  --window-count 25 --window-policy center
+
+python -m src.evaluate_video_av --backend syncnet \
+  --checkpoint models/checkpoints/video_av_syncnet_fixed25.pt \
+  --out report/val_eval/video_av_syncnet_fixed25_val.txt \
+  --window-count 25 --window-policy center --allow-partial
+python -m src.evaluate_video_av --backend avhubert \
+  --checkpoint models/checkpoints/video_av_avhubert_fixed25.pt \
+  --out report/val_eval/video_av_avhubert_fixed25_val.txt \
+  --window-count 25 --window-policy center --allow-partial
+
+# 6. Higgsfield external stress test (drop videos into
+#    data/higgsfield_gen_videos/ first)
+python -m scripts.score_higgsfield_video_av --backend syncnet \
+  --checkpoint models/checkpoints/video_av_syncnet.pt \
+  --out report/val_eval/higgsfield_video_av_syncnet_scores.csv \
+  --threshold 0.2712
+python -m scripts.score_higgsfield_video_av --backend avhubert \
+  --checkpoint models/checkpoints/video_av_avhubert.pt \
+  --out report/val_eval/higgsfield_video_av_avhubert_scores.csv \
+  --threshold 0.2228
+
+# Fixed-window variants (use each fixed25 checkpoint's threshold)
+python -m scripts.score_higgsfield_video_av --backend syncnet \
+  --checkpoint models/checkpoints/video_av_syncnet_fixed25.pt \
+  --out report/val_eval/higgsfield_video_av_syncnet_fixed25_scores.csv \
+  --window-count 25 --window-policy center --threshold 0.3585
+python -m scripts.score_higgsfield_video_av --backend avhubert \
+  --checkpoint models/checkpoints/video_av_avhubert_fixed25.pt \
+  --out report/val_eval/higgsfield_video_av_avhubert_fixed25_scores.csv \
+  --window-count 25 --window-policy center --threshold 0.4544
+```
+
+## Sync-Consistency Repro Commands
+
+```bash
+# WavLM + BiGRU baseline
+python -m src.train_lipsync --backend wavlm \
+  --run-name lipsync_wavlm \
+  --checkpoint-path models/checkpoints/lipsync_wavlm.pt
+python -m src.evaluate_lipsync \
+  --checkpoint models/checkpoints/lipsync_wavlm.pt
+
+# Pretrained SyncNet / AV-HuBERT consistency heads
+for B in syncnet avhubert; do
+  python -m src.train_lipsync_pretrained --backend $B \
+    --run-name lipsync_${B} --out models/checkpoints/lipsync_${B}.pt
+  python -m src.evaluate_lipsync_pretrained --backend $B \
+    --checkpoint models/checkpoints/lipsync_${B}.pt \
+    --out report/val_eval/${B}_val.txt --allow-partial
+done
+```
+
 ## Known Limitations
 
 **Per-TTS-engine spectral and channel fingerprinting.** WavLM and HuBERT
@@ -329,11 +507,36 @@ generalization.
 
 **Concat fusion ≈ audio-only.** The old late-fusion model inherits the dominant
 audio score. Final fusion should combine explicit head scores:
-`audio_fake_score`, `visual_fake_score`, and `av_inconsistent_score`.
+`audio_fake_score`, `visual_fake_score`, `av_inconsistent_score`, and
+`video_av_fake_score`.
+
+**Sync-consistency is diagnostic, not final.** The pretrained SyncNet and
+AV-HuBERT sync-consistency heads label a video paired with its own audio as
+`matched` even when the video itself is generated. That is correct for the
+sync task but incompatible with the deepfake objective. All final numbers
+must come from the video-level AV head, the audio anti-spoof head, or the
+visual fake-video head — never from sync-consistency alone.
+
+**Video-level AV is validation-strength only.** ROC-AUC 0.96 (uncontrolled)
+and 0.93 (fixed-window) are honest in-distribution val numbers on a locked
+70/15/15 split. The Higgsfield hit rates are cross-generator stress tests on a
+single external source without paired real controls. Neither is proof of
+real-world deepfake detection.
+
+**Temporal-length cue.** Source folders have different clip-duration
+distributions. The `fixed25` ablation forces every clip to 25 center windows
+and costs ~3 ROC-AUC points. That gap is the plausible upper bound of
+duration-shortcut contribution.
+
+**LivePortrait is the hardest fake source** on both sync-consistency and
+video-level AV (recall 0.30–0.68 depending on setup). It should be reported
+as a per-source result, not aggregated away.
 
 ## Next Branches
 
-1. `feat/pretrained-syncnet` — replace or augment the lightweight consistency
-   head with a pretrained/raw-frame SyncNet-style mouth-audio model.
-2. `feat/generated-video-batch-fusion` — score the incoming fully AI-generated
-   videos with the three heads and evaluate final multimodal fusion.
+1. `feat/generated-video-batch-fusion` — combine `audio_fake_score`,
+   `visual_fake_score`, `av_inconsistent_score`, and `video_av_fake_score`
+   into a single deepfake decision.
+2. Cross-generator generalization — score MAVOS-DD-trained heads on
+   unseen generators (Higgsfield done; more to add) and report
+   leave-one-generator-out.

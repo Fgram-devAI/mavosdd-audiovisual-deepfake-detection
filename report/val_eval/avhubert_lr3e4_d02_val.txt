@@ -1,0 +1,6 @@
+# WARNING: partial_evaluation=true — see excluded_by_reason
+split=val n_manifest=3168 n_evaluated=3149 n_excluded=19 excluded_by_reason={'missing_visual': 10, 'extraction_failure': 9} partial_evaluation=true positive_class=async_inconsistent_pair roc_auc=0.7388 eer=0.3356 threshold_used=0.7068 f1=0.7607
+confusion={'tn': 412, 'fp': 208, 'fn': 849, 'tp': 1680}
+sync_accuracy=0.6645
+per_negative_type_recall={'generated_same_transcript': 0.9310344827586207, 'mismatched_generated': 0.9354838709677419, 'mismatched_original': 0.3785540211210398}
+per_provider_recall={'elevenlabs': 0.9148351648351648, 'google_tts': 0.8740157480314961, 'openai_tts': 0.9909584086799277, 'original': 0.3785540211210398}

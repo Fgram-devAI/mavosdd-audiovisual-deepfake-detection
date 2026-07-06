@@ -1,0 +1,4 @@
+# WARNING: partial_evaluation=true -- see excluded_by_reason
+split=val n_manifest=622 n_evaluated=620 n_excluded=2 excluded_by_reason={'missing_visual': 2} partial_evaluation=true positive_class=fake_video roc_auc=0.8703 eer=0.2018 threshold_used=0.2712 f1=0.7592 precision=0.7243 recall=0.7976
+confusion={'tn': 298, 'fp': 75, 'fn': 50, 'tp': 197}
+per_source_recall_or_specificity={'echomimic': 0.9111111111111111, 'liveportrait': 0.2978723404255319, 'memo': 0.85, 'real': 0.7989276139410187, 'sonic': 1.0}
