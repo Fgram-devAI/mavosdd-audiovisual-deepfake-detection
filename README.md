@@ -11,16 +11,11 @@ four related tasks separate instead of pretending they are one:
 | Video-level AV fake (corrected final) | Is this a fake video, given its native audio? | EchoMimic / MEMO / LivePortrait / Sonic with own audio |
 
 The final detector combines explicit head scores as separate signals. The
-shipped fusion in this branch uses three head scores; adding the
-visual-frame score is deferred until a stable CLI/checkpoint path exists
-(follow-up: `feat/visual-frame-score-cli`).
+shipped fusion uses three trainable CLI head scores. The visual-frame score is
+reported as a notebook-only baseline and is not part of the final fusion model.
 
 ```text
-# Shipped in feat/final-fusion-generated-video (three heads).
 deepfake_score = fusion(audio_fake_score, video_av_fake_score, sync_inconsistent_score)
-
-# Future — pending visual-frame CLI extraction.
-deepfake_score = fusion(audio_fake_score, video_av_fake_score, sync_inconsistent_score, visual_fake_score)
 ```
 
 **Why the video-level AV head is separate from AV sync.** The AV-sync head
@@ -34,8 +29,8 @@ audio is the video's native track, so it does not inherit the AV-sync task's
 "same audio ⇒ negative" bias.
 
 Implementation details and the full working memory live in
-[`CLAUDE.md`](CLAUDE.md). This README keeps only the public repro commands,
-headline metrics, and current roadmap.
+[`CLAUDE.md`](CLAUDE.md). This README keeps the public repro commands,
+headline metrics, report artifacts, and final limitations.
 
 ## Final Report
 
@@ -44,6 +39,9 @@ The final write-up is available at
 It summarizes the dataset construction, acoustic/visual confound audits,
 audio baselines, sync diagnostics, corrected video-level AV detection, final
 score-level fusion, and the Higgsfield positive-only stress test.
+
+The presentation deck is available at
+[`report/deepfake-multimodal-presentation.pptx`](report/deepfake-multimodal-presentation.pptx).
 
 ## Roadmap Snapshot
 
@@ -404,97 +402,6 @@ not fully explain the external Higgsfield hits. These are cross-generator
 stress-test hit rates, not calibrated detection accuracies — Higgsfield videos
 have no `real` counterpart in this pool, so specificity cannot be measured here.
 
-## Video-Level AV Repro Commands
-
-```bash
-# 1. Build the video-level AV manifest (native own-audio rows only,
-#    test split refused at build time; real=0, fake_source=1)
-python -m src.data.build_video_av_manifest \
-  --source data/derived/visual_speech_manifest_voice_split.csv \
-  --out    data/derived/video_av_manifest.csv \
-  --splits train val
-
-# 2. Extract SyncNet and AV-HuBERT embeddings once (frozen backbones)
-python -m src.features.extract_syncnet_embeddings  --splits train val
-python -m src.features.extract_avhubert_embeddings --splits train val
-
-# 3. Train the video-level AV heads (uncontrolled: all windows per clip)
-python -m src.train_video_av --backend syncnet  \
-  --run-name video_av_syncnet  --out models/checkpoints/video_av_syncnet.pt
-python -m src.train_video_av --backend avhubert \
-  --run-name video_av_avhubert --out models/checkpoints/video_av_avhubert.pt
-
-# 4. Evaluate on val (test refused; use --allow-partial to accept the
-#    2/622 excluded rows for missing visual embeddings)
-python -m src.evaluate_video_av --backend syncnet  \
-  --checkpoint models/checkpoints/video_av_syncnet.pt  \
-  --out report/val_eval/video_av_syncnet_val.txt  --allow-partial
-python -m src.evaluate_video_av --backend avhubert \
-  --checkpoint models/checkpoints/video_av_avhubert.pt \
-  --out report/val_eval/video_av_avhubert_val.txt --allow-partial
-
-# 5. Fixed-window ablation (mitigates the duration cue: exactly 25
-#    center windows per clip during both training and evaluation)
-python -m src.train_video_av --backend syncnet \
-  --run-name video_av_syncnet_fixed25 \
-  --out models/checkpoints/video_av_syncnet_fixed25.pt \
-  --window-count 25 --window-policy center
-python -m src.train_video_av --backend avhubert \
-  --run-name video_av_avhubert_fixed25 \
-  --out models/checkpoints/video_av_avhubert_fixed25.pt \
-  --window-count 25 --window-policy center
-
-python -m src.evaluate_video_av --backend syncnet \
-  --checkpoint models/checkpoints/video_av_syncnet_fixed25.pt \
-  --out report/val_eval/video_av_syncnet_fixed25_val.txt \
-  --window-count 25 --window-policy center --allow-partial
-python -m src.evaluate_video_av --backend avhubert \
-  --checkpoint models/checkpoints/video_av_avhubert_fixed25.pt \
-  --out report/val_eval/video_av_avhubert_fixed25_val.txt \
-  --window-count 25 --window-policy center --allow-partial
-
-# 6. Higgsfield external stress test (drop videos into
-#    data/higgsfield_gen_videos/ first)
-python -m scripts.score_higgsfield_video_av --backend syncnet \
-  --checkpoint models/checkpoints/video_av_syncnet.pt \
-  --out report/val_eval/higgsfield_video_av_syncnet_scores.csv \
-  --threshold 0.2712
-python -m scripts.score_higgsfield_video_av --backend avhubert \
-  --checkpoint models/checkpoints/video_av_avhubert.pt \
-  --out report/val_eval/higgsfield_video_av_avhubert_scores.csv \
-  --threshold 0.2228
-
-# Fixed-window variants (use each fixed25 checkpoint's threshold)
-python -m scripts.score_higgsfield_video_av --backend syncnet \
-  --checkpoint models/checkpoints/video_av_syncnet_fixed25.pt \
-  --out report/val_eval/higgsfield_video_av_syncnet_fixed25_scores.csv \
-  --window-count 25 --window-policy center --threshold 0.3585
-python -m scripts.score_higgsfield_video_av --backend avhubert \
-  --checkpoint models/checkpoints/video_av_avhubert_fixed25.pt \
-  --out report/val_eval/higgsfield_video_av_avhubert_fixed25_scores.csv \
-  --window-count 25 --window-policy center --threshold 0.4544
-```
-
-## Sync-Consistency Repro Commands
-
-```bash
-# WavLM + BiGRU baseline
-python -m src.train_lipsync --backend wavlm \
-  --run-name lipsync_wavlm \
-  --checkpoint-path models/checkpoints/lipsync_wavlm.pt
-python -m src.evaluate_lipsync \
-  --checkpoint models/checkpoints/lipsync_wavlm.pt
-
-# Pretrained SyncNet / AV-HuBERT consistency heads
-for B in syncnet avhubert; do
-  python -m src.train_lipsync_pretrained --backend $B \
-    --run-name lipsync_${B} --out models/checkpoints/lipsync_${B}.pt
-  python -m src.evaluate_lipsync_pretrained --backend $B \
-    --checkpoint models/checkpoints/lipsync_${B}.pt \
-    --out report/val_eval/${B}_val.txt --allow-partial
-done
-```
-
 ## Known Limitations
 
 **Per-TTS-engine spectral and channel fingerprinting.** WavLM and HuBERT
@@ -525,8 +432,7 @@ audio score. Final fusion combines explicit head scores. The shipped
 three-head fusion uses `audio_fake_score`, `video_av_fake_score`, and
 `sync_inconsistent_score`; `visual_fake_score` is defined in the score CSV
 schema but stays blank in this branch because the EfficientNet-B0 sampled-frame
-baseline is notebook-only. Extracting it into a stable CLI is tracked as
-follow-up `feat/visual-frame-score-cli`.
+baseline is notebook-only.
 
 **Sync-consistency is diagnostic, not final.** The pretrained SyncNet and
 AV-HuBERT sync-consistency heads label a video paired with its own audio as
@@ -550,15 +456,14 @@ duration-shortcut contribution.
 video-level AV (recall 0.30–0.68 depending on setup). It should be reported
 as a per-source result, not aggregated away.
 
-### Final fusion (`feat/final-fusion-generated-video`)
+### Final Fusion
 
 Combines **three** already-trained heads into a single video-level fake
 probability without collapsing their meanings. A fourth head
 (`visual_fake_score`) is present in the score-CSV schema but is not used —
 the EfficientNet-B0 sampled-frame baseline lives only in
 `notebooks/03_visual_frame_baseline_extended_data.ipynb` and has no stable
-CLI or checkpoint API. Adding it to fusion is tracked as follow-up
-`feat/visual-frame-score-cli`.
+CLI or checkpoint API.
 
 | Head | Question | In shipped fusion? |
 |---|---|---|
@@ -566,7 +471,7 @@ CLI or checkpoint API. Adding it to fusion is tracked as follow-up
 | `video_av_fake_score` | Is this a MAVOS-DD generated video source, judged by pretrained AV embeddings? | ✅ |
 | `sync_inconsistent_score` | Do the mouth motion and audio disagree? Diagnostic AV-consistency signal — not itself a fake detector. | ✅ |
 | `visual_fake_score` | Are sampled frames from a generated source? Notebook-only EfficientNet-B0 baseline; likely channel-confounded (disjoint resolution / FPS / codec across source folders). See `report/val_eval/final_fusion_visual_frame_unavailable.md`. | ❌ deferred |
-| `final_fusion_score` | Combined video-level fake probability from the three trained heads. | — |
+| `final_fusion_score` | Combined video-level fake probability from the three trained heads. | Output score |
 
 Important: a generated video with its **own** original audio is `final_label=1`
 even if `sync_inconsistent_score` says the audio and lips match. Sync
@@ -581,10 +486,3 @@ inconsistency-as-generated-video predictor is worse than chance on this data.
 Val results table: `report/val_eval/final_fusion_comparison.md`.
 Higgsfield external stress-test batch: `report/val_eval/generated_video_batch_summary.md`
 (positive-only; hit rate, not accuracy).
-
-## Next Branches
-
-1. `feat/final-report` — write-up branch consolidating all results.
-2. Cross-generator generalization — score MAVOS-DD-trained heads on
-   unseen generators (Higgsfield done; more to add) and report
-   leave-one-generator-out.
